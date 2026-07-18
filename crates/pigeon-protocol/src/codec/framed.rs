@@ -117,7 +117,6 @@ impl Decoder for PacketCodec {
             buf.extend_from_slice(&chunk);
             self.decrypt_offset = buf.len();
         }
-
         // Peek at the VarInt length using a cursor over a reference to `buf`.
         // We must not consume the bytes until we know the full frame is
         // available, so we use a non-mutating cursor here.
