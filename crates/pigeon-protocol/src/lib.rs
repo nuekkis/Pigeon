@@ -8,7 +8,7 @@ pub mod java;
 pub mod ser;
 
 pub use codec::{
-    compress_payload, decompress_payload, CipherRead, CipherWrite, CompressionError,
-    DecodedPacket, EncodedPacket, EncryptionError, PacketCodec, PacketDecodeError,
-    PacketEncodeError, SharedSecret,
+    compress_payload, decompress_payload, CipherRead, CipherWrite, CompressionError, DecodedPacket,
+    EncodedPacket, EncryptionError, PacketCodec, PacketDecodeError, PacketEncodeError,
+    SharedSecret,
 };

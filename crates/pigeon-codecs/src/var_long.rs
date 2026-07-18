@@ -67,7 +67,8 @@ pub fn var_long_size(value: i64) -> usize {
         }
     }
     size
-}#[cfg(test)]
+}
+#[cfg(test)]
 mod tests {
     use super::*;
     use bytes::BytesMut;

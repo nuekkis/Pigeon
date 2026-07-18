@@ -18,7 +18,6 @@ fn init_tracing() {
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
         )
         .try_init();
-    eprintln!("[pigeon] tracing initialized");
 }
 
 async fn async_main() -> Result<()> {
