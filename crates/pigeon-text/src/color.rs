@@ -1,0 +1,53 @@
+use serde::{Deserialize, Serialize};
+
+/// Named Minecraft text colors (legacy chat codes mapped to RGB).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TextColor {
+    Black,
+    DarkBlue,
+    DarkGreen,
+    DarkAqua,
+    DarkRed,
+    DarkPurple,
+    Gold,
+    Gray,
+    DarkGray,
+    Blue,
+    Green,
+    Aqua,
+    Red,
+    LightPurple,
+    Yellow,
+    White,
+    #[serde(untagged)]
+    Custom(u32),
+}
+
+impl TextColor {
+    pub const fn rgb(self) -> u32 {
+        match self {
+            Self::Black => 0x000000,
+            Self::DarkBlue => 0x0000AA,
+            Self::DarkGreen => 0x00AA00,
+            Self::DarkAqua => 0x00AAAA,
+            Self::DarkRed => 0xAA0000,
+            Self::DarkPurple => 0xAA00AA,
+            Self::Gold => 0xFFAA00,
+            Self::Gray => 0xAAAAAA,
+            Self::DarkGray => 0x555555,
+            Self::Blue => 0x5555FF,
+            Self::Green => 0x55FF55,
+            Self::Aqua => 0x55FFFF,
+            Self::Red => 0xFF5555,
+            Self::LightPurple => 0xFF55FF,
+            Self::Yellow => 0xFFFF55,
+            Self::White => 0xFFFFFF,
+            Self::Custom(c) => c,
+        }
+    }
+
+    pub fn to_hex(self) -> String {
+        format!("#{:06X}", self.rgb())
+    }
+}

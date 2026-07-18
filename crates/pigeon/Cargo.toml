@@ -1,0 +1,18 @@
+[package]
+name = "pigeon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "pigeon"
+path = "src/main.rs"
+
+[dependencies]
+pigeon-core      = { workspace = true }
+pigeon-config    = { workspace = true }
+tokio            = { workspace = true }
+tracing          = { workspace = true }
+anyhow           = { workspace = true }
