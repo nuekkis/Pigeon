@@ -19,7 +19,8 @@ pub struct Server {
 impl Server {
     pub async fn new() -> Result<Self> {
         let config = Arc::new(pigeon_config::load_default()?);
-        let addr: SocketAddr = format!("{}:{}", config.network.bind_address, config.network.port).parse()?;
+        let addr: SocketAddr =
+            format!("{}:{}", config.network.bind_address, config.network.port).parse()?;
         tracing::info!(%addr, "starting Pigeon server");
         let listener = TcpListener::bind(addr).await?;
         Ok(Self { config, listener })

@@ -24,7 +24,10 @@ pub enum IdentifierParseError {
 }
 
 impl Identifier {
-    pub fn new(namespace: impl Into<String>, path: impl Into<String>) -> Result<Self, IdentifierParseError> {
+    pub fn new(
+        namespace: impl Into<String>,
+        path: impl Into<String>,
+    ) -> Result<Self, IdentifierParseError> {
         let namespace = namespace.into();
         let path = path.into();
         validate_namespace(&namespace)?;

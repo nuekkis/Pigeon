@@ -68,7 +68,11 @@ pub fn read_string<B: Buf>(buf: &mut B, max_len: usize) -> Result<String, Packet
     String::from_utf8(bytes).map_err(|_| PacketSerError::InvalidValue)
 }
 
-pub fn write_string<B: BufMut>(value: &str, buf: &mut B, _max_len: usize) -> Result<(), PacketSerError> {
+pub fn write_string<B: BufMut>(
+    value: &str,
+    buf: &mut B,
+    _max_len: usize,
+) -> Result<(), PacketSerError> {
     let bytes = cesu8::encode_java(value);
     pigeon_codecs::write_var_int(bytes.len() as i32, buf)?;
     if buf.remaining_mut() < bytes.len() {

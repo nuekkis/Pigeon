@@ -29,10 +29,7 @@ impl ChunkPos {
     }
 
     pub fn region_local(self) -> (u32, u32) {
-        (
-            self.x.rem_euclid(32) as u32,
-            self.z.rem_euclid(32) as u32,
-        )
+        (self.x.rem_euclid(32) as u32, self.z.rem_euclid(32) as u32)
     }
 
     pub fn square_distance(self, other: Self) -> i64 {

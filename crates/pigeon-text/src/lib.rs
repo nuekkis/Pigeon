@@ -1,8 +1,11 @@
-mod component;
 mod color;
+mod component;
 
 pub use color::TextColor;
-pub use component::{Component, ComponentStyle, KeybindComponent, ScoreComponent, SelectorComponent, TextComponent, TranslatableComponent, ClickType, HoverType};
+pub use component::{
+    ClickType, Component, ComponentStyle, HoverType, KeybindComponent, ScoreComponent,
+    SelectorComponent, TextComponent, TranslatableComponent,
+};
 
 use serde::Serialize;
 

@@ -7,4 +7,6 @@ pub mod codec;
 pub mod java;
 pub mod ser;
 
-pub use codec::framed::{DecodedPacket, EncodedPacket, PacketCodec, PacketDecodeError, PacketEncodeError};
+pub use codec::framed::{
+    DecodedPacket, EncodedPacket, PacketCodec, PacketDecodeError, PacketEncodeError,
+};

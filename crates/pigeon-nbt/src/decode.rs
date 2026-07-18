@@ -1,4 +1,5 @@
-use crate::value::{Nbt, NbtCompound, NbtList, NbtTag, NbtValue, MAX_DEPTH};
+use crate::value::{Nbt, NbtCompound, NbtList, NbtTag, NbtValue};
+use crate::MAX_DEPTH;
 use bytes::Buf;
 use thiserror::Error;
 
@@ -111,10 +112,8 @@ impl<'a, B: Buf> NbtReader<'a, B> {
                     return Err(NbtDecodeError::DepthExceeded);
                 }
                 let element_type_id = self.read_u8()?;
-                let element_type =
-                    NbtTag::from_u8(element_type_id).ok_or(NbtDecodeError::InvalidListType(
-                        element_type_id,
-                    ))?;
+                let element_type = NbtTag::from_u8(element_type_id)
+                    .ok_or(NbtDecodeError::InvalidListType(element_type_id))?;
                 let len = self.read_i32()?;
                 if len < 0 {
                     return Err(NbtDecodeError::Eof);
@@ -142,9 +141,8 @@ impl<'a, B: Buf> NbtReader<'a, B> {
                     if tag_id == 0 {
                         break;
                     }
-                    let tag = NbtTag::from_u8(tag_id).ok_or(NbtDecodeError::InvalidTagId(
-                        tag_id,
-                    ))?;
+                    let tag =
+                        NbtTag::from_u8(tag_id).ok_or(NbtDecodeError::InvalidTagId(tag_id))?;
                     let name = self.read_string()?;
                     let value = self.read_payload(tag)?;
                     compound.insert(name, value);
@@ -186,8 +184,7 @@ impl<'a, B: Buf> NbtReader<'a, B> {
         if tag_id == 0 {
             return Err(NbtDecodeError::InvalidTagId(0));
         }
-        let tag =
-            NbtTag::from_u8(tag_id).ok_or(NbtDecodeError::InvalidTagId(tag_id))?;
+        let tag = NbtTag::from_u8(tag_id).ok_or(NbtDecodeError::InvalidTagId(tag_id))?;
         let name = self.read_string()?;
         let value = self.read_payload(tag)?;
         match value {
@@ -196,10 +193,7 @@ impl<'a, B: Buf> NbtReader<'a, B> {
         }
     }
     /// Read a single named NBT value of the given tag without prefix header.
-    pub fn read_named_payload(
-        &mut self,
-        tag: NbtTag,
-    ) -> Result<NbtValue, NbtDecodeError> {
+    pub fn read_named_payload(&mut self, tag: NbtTag) -> Result<NbtValue, NbtDecodeError> {
         self.read_payload(tag)
     }
 }

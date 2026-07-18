@@ -41,8 +41,7 @@ impl Connection {
 /// Builds a server list ping response from `config`.
 pub fn build_status_response(config: &ServerConfig, players_online: u32) -> status::StatusResponse {
     use pigeon_text::Component;
-    let description =
-        Component::text(format!("{}\n{}", config.motd.line1, config.motd.line2));
+    let description = Component::text(format!("{}\n{}", config.motd.line1, config.motd.line2));
     let response = status::ServerPingResponse {
         version: status::ServerPingVersion {
             name: "1.21.11".to_string(),
@@ -58,7 +57,9 @@ pub fn build_status_response(config: &ServerConfig, players_online: u32) -> stat
         enforce_secure_chat: Some(false),
     };
     let json = serde_json::to_string(&response).unwrap_or_else(|_| "{}".to_string());
-    status::StatusResponse { json_response: json }
+    status::StatusResponse {
+        json_response: json,
+    }
 }
 
 /// Routes a decoded packet in the Status state to its reply (if any).
@@ -71,17 +72,27 @@ pub fn route_status(
         status::StatusRequest::ID => {
             let response = build_status_response(config, players_online);
             let mut buf = bytes::BytesMut::new();
-            response.encode(&mut buf).map_err(|e| anyhow!(e.to_string()))?;
-            Ok(Some(EncodedPacket::new(status::StatusResponse::ID, buf.freeze())))
+            response
+                .encode(&mut buf)
+                .map_err(|e| anyhow!(e.to_string()))?;
+            Ok(Some(EncodedPacket::new(
+                status::StatusResponse::ID,
+                buf.freeze(),
+            )))
         }
         status::PingRequest::ID => {
             let mut reader = std::io::Cursor::new(packet.payload);
             let req =
                 status::PingRequest::decode(&mut reader).map_err(|e| anyhow!(e.to_string()))?;
             let mut buf = bytes::BytesMut::new();
-            let resp = status::PongResponse { payload: req.payload };
+            let resp = status::PongResponse {
+                payload: req.payload,
+            };
             resp.encode(&mut buf).map_err(|e| anyhow!(e.to_string()))?;
-            Ok(Some(EncodedPacket::new(status::PongResponse::ID, buf.freeze())))
+            Ok(Some(EncodedPacket::new(
+                status::PongResponse::ID,
+                buf.freeze(),
+            )))
         }
         _ => Ok(None),
     }
@@ -94,8 +105,7 @@ pub fn route_login(packet: DecodedPacket) -> Result<Option<login::LoginStart>> {
         return Ok(None);
     }
     let mut reader = std::io::Cursor::new(packet.payload);
-    let login_start =
-        login::LoginStart::decode(&mut reader).map_err(|e| anyhow!(e.to_string()))?;
+    let login_start = login::LoginStart::decode(&mut reader).map_err(|e| anyhow!(e.to_string()))?;
     Ok(Some(login_start))
 }
 

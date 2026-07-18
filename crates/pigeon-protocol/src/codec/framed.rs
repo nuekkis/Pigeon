@@ -167,8 +167,7 @@ impl Decoder for PacketCodec {
                 } else {
                     let data_len = data_len as usize;
                     let compressed = &body[header_consumed..];
-                    let decompressed =
-                        crate::codec::compression::decompress_payload(compressed)?;
+                    let decompressed = crate::codec::compression::decompress_payload(compressed)?;
                     if decompressed.len() != data_len {
                         return Err(PacketDecodeError::Compression(
                             crate::codec::CompressionError::LengthMismatch,
@@ -195,11 +194,7 @@ impl Decoder for PacketCodec {
 impl Encoder<EncodedPacket> for PacketCodec {
     type Error = PacketEncodeError;
 
-    fn encode(
-        &mut self,
-        item: EncodedPacket,
-        buf: &mut BytesMut,
-    ) -> Result<(), PacketEncodeError> {
+    fn encode(&mut self, item: EncodedPacket, buf: &mut BytesMut) -> Result<(), PacketEncodeError> {
         // Step 1: pack [VarInt packet_id][payload] into a temp.
         let mut inner = BytesMut::with_capacity(8 + item.payload.len());
         pigeon_codecs::write_var_int(item.id, &mut inner)?;

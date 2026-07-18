@@ -27,7 +27,11 @@ impl BlockPos {
 
     pub fn section_y(self, section_height: u32) -> u32 {
         let shifted = self.y.div_euclid(section_height as i32);
-        if shifted < 0 { 0 } else { shifted as u32 }
+        if shifted < 0 {
+            0
+        } else {
+            shifted as u32
+        }
     }
 
     pub fn section_relative(self, section_height: u32) -> (u32, u32, u32) {

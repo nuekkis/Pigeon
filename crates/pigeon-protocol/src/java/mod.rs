@@ -6,9 +6,9 @@
 //! (serverbound-to-client) packets.
 
 pub mod client;
+pub mod login;
 pub mod server;
 pub mod state;
 pub mod status;
-pub mod login;
 
 pub use state::ProtocolState;

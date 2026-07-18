@@ -44,8 +44,8 @@ pub fn compress_payload(
 pub fn decompress_payload(input: &[u8]) -> Result<Vec<u8>, CompressionError> {
     use bytes::Buf;
     let mut buf = std::io::Cursor::new(input);
-    let data_len = pigeon_codecs::read_var_int(&mut buf)
-        .map_err(|_| CompressionError::LengthMismatch)?;
+    let data_len =
+        pigeon_codecs::read_var_int(&mut buf).map_err(|_| CompressionError::LengthMismatch)?;
     if data_len < 0 {
         return Err(CompressionError::LengthMismatch);
     }
@@ -56,6 +56,8 @@ pub fn decompress_payload(input: &[u8]) -> Result<Vec<u8>, CompressionError> {
     }
     let mut decoder = ZlibDecoder::new(rest);
     let mut out = Vec::with_capacity(data_len as usize);
-    decoder.read_to_end(&mut out).map_err(CompressionError::Io)?;
+    decoder
+        .read_to_end(&mut out)
+        .map_err(CompressionError::Io)?;
     Ok(out)
 }
