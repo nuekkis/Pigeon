@@ -177,4 +177,5 @@ impl Nbt {
 /// Temporary legacy alias kept so that downstream code referencing
 /// `BTreeMap`-based compounds continues to type-check during the migration.
 #[deprecated(note = "use NbtCompound instead")]
+#[allow(dead_code)]
 pub type LegacyCompound = BTreeMap<String, NbtValue>;

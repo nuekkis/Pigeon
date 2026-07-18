@@ -26,7 +26,7 @@ impl Server {
         Ok(Self { config, listener })
     }
 
-    pub async fn run(mut self) -> Result<()> {
+    pub async fn run(self) -> Result<()> {
         let config = self.config.clone();
         loop {
             let (stream, peer) = match self.listener.accept().await {

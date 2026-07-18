@@ -55,6 +55,7 @@ pub fn write_var_long<B: BufMut>(value: i64, buf: &mut B) -> Result<(), VarLongW
     }
 }
 
+#[allow(dead_code)]
 pub fn var_long_size(value: i64) -> usize {
     let mut value = value as u64;
     let mut size = 0;
@@ -66,9 +67,7 @@ pub fn var_long_size(value: i64) -> usize {
         }
     }
     size
-}
-
-#[cfg(test)]
+}#[cfg(test)]
 mod tests {
     use super::*;
     use bytes::BytesMut;
@@ -77,7 +76,7 @@ mod tests {
     fn round_trip_simple() {
         let mut buf = BytesMut::new();
         write_var_long(0, &mut buf).unwrap();
-        assert_eq!(buf, &[0]);
+        assert_eq!(buf.as_ref(), &[0][..]);
         let mut read_buf = buf.freeze();
         assert_eq!(read_var_long(&mut read_buf).unwrap(), 0);
     }

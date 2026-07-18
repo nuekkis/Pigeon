@@ -73,7 +73,7 @@ pub fn write_string<B: BufMut>(
     buf: &mut B,
     _max_len: usize,
 ) -> Result<(), PacketSerError> {
-    let bytes = cesu8::encode_java(value);
+    let bytes = cesu8::to_java_cesu8(value);
     pigeon_codecs::write_var_int(bytes.len() as i32, buf)?;
     if buf.remaining_mut() < bytes.len() {
         return Err(PacketSerError::Overflow);

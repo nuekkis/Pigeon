@@ -42,7 +42,6 @@ pub fn compress_payload(
 /// as already-uncompressed (matching the Minecraft "encoded without
 /// compression" sentinel).
 pub fn decompress_payload(input: &[u8]) -> Result<Vec<u8>, CompressionError> {
-    use bytes::Buf;
     let mut buf = std::io::Cursor::new(input);
     let data_len =
         pigeon_codecs::read_var_int(&mut buf).map_err(|_| CompressionError::LengthMismatch)?;

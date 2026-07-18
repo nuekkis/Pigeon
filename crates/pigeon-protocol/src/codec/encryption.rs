@@ -5,7 +5,7 @@
 //! AES key and the initialization vector (a quirk of vanilla Java).
 
 use aes::Aes128;
-use cfb8::cipher::{KeyIvInit, StreamCipher};
+use cfb8::cipher::KeyIvInit;
 use thiserror::Error;
 
 type Encryptor = cfb8::Encryptor<Aes128>;

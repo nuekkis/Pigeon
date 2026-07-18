@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 
 /// The four top-level states of a Minecraft Java connection.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ProtocolState {
     /// Initial handshake: client selects the next state (status or login).
+    #[default]
     Handshake,
     /// Server list ping + pong.
     Status,
@@ -25,11 +26,5 @@ impl ProtocolState {
             Self::Configuration => "configuration",
             Self::Play => "play",
         }
-    }
-}
-
-impl Default for ProtocolState {
-    fn default() -> Self {
-        Self::Handshake
     }
 }

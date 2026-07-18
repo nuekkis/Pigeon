@@ -21,7 +21,7 @@ impl Aabb {
     }
 
     pub fn size(self) -> Vec3 {
-        self.max.sub(self.min)
+        self.max - self.min
     }
 
     pub fn center(self) -> Vec3 {
@@ -49,8 +49,8 @@ impl Aabb {
 
     pub fn offset(self, delta: Vec3) -> Self {
         Self {
-            min: self.min.add(delta),
-            max: self.max.add(delta),
+            min: self.min + delta,
+            max: self.max + delta,
         }
     }
 

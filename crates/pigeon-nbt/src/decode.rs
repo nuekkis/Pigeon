@@ -77,7 +77,7 @@ impl<'a, B: Buf> NbtReader<'a, B> {
         for byte in out.iter_mut() {
             *byte = self.buf.get_u8();
         }
-        match cesu8::decode_java(&out) {
+        match cesu8::from_java_cesu8(&out) {
             Ok(s) => Ok(s.into_owned()),
             Err(_) => Err(NbtDecodeError::InvalidUtf8),
         }
@@ -189,7 +189,7 @@ impl<'a, B: Buf> NbtReader<'a, B> {
         let value = self.read_payload(tag)?;
         match value {
             NbtValue::Compound(root) => Ok(Nbt { name, root }),
-            other => Err(NbtDecodeError::InvalidTagId(tag_id)),
+            _ => Err(NbtDecodeError::InvalidTagId(tag_id)),
         }
     }
     /// Read a single named NBT value of the given tag without prefix header.

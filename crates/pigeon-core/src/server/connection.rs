@@ -39,6 +39,7 @@ impl Connection {
 }
 
 /// Builds a server list ping response from `config`.
+#[allow(dead_code)]
 pub fn build_status_response(config: &ServerConfig, players_online: u32) -> status::StatusResponse {
     use pigeon_text::Component;
     let description = Component::text(format!("{}\n{}", config.motd.line1, config.motd.line2));
@@ -63,6 +64,7 @@ pub fn build_status_response(config: &ServerConfig, players_online: u32) -> stat
 }
 
 /// Routes a decoded packet in the Status state to its reply (if any).
+#[allow(dead_code)]
 pub fn route_status(
     packet: DecodedPacket,
     config: &ServerConfig,
@@ -100,6 +102,7 @@ pub fn route_status(
 
 /// Routes a Login Start packet. Returns `Some(LoginStart)` if the inbound
 /// packet is a login start, `None` otherwise.
+#[allow(dead_code)]
 pub fn route_login(packet: DecodedPacket) -> Result<Option<login::LoginStart>> {
     if packet.id != login::LoginStart::ID {
         return Ok(None);
@@ -110,6 +113,7 @@ pub fn route_login(packet: DecodedPacket) -> Result<Option<login::LoginStart>> {
 }
 
 /// Returns the next state given the handshake's `next_state` field.
+#[allow(dead_code)]
 pub fn next_state_from(next: status::NextState) -> ProtocolState {
     match next {
         status::NextState::Status => ProtocolState::Status,
@@ -119,4 +123,5 @@ pub fn next_state_from(next: status::NextState) -> ProtocolState {
 
 /// Marker so callers wanting a typed `Framed` handle keep referring to the
 /// same codec facade as the implementation evolves.
+#[allow(dead_code)]
 pub type WireConnection = Framed<TcpStream, PacketCodec>;

@@ -58,6 +58,7 @@ pub fn write_var_int<B: BufMut>(value: i32, buf: &mut B) -> Result<(), VarIntWri
 }
 
 /// Size in bytes a VarInt will occupy once serialized.
+#[allow(dead_code)]
 pub fn var_int_size(value: i32) -> usize {
     let mut value = value as u32;
     let mut size = 0;
@@ -80,7 +81,7 @@ mod tests {
     fn round_trip_zero() {
         let mut buf = BytesMut::new();
         write_var_int(0, &mut buf).unwrap();
-        assert_eq!(buf, &[0]);
+        assert_eq!(buf.as_ref(), &[0][..]);
         let mut read_buf = buf.freeze();
         assert_eq!(read_var_int(&mut read_buf).unwrap(), 0);
     }
@@ -89,7 +90,7 @@ mod tests {
     fn round_trip_one() {
         let mut buf = BytesMut::new();
         write_var_int(1, &mut buf).unwrap();
-        assert_eq!(buf, &[1]);
+        assert_eq!(buf.as_ref(), &[1][..]);
         let mut read_buf = buf.freeze();
         assert_eq!(read_var_int(&mut read_buf).unwrap(), 1);
     }
@@ -98,7 +99,7 @@ mod tests {
     fn round_trip_127() {
         let mut buf = BytesMut::new();
         write_var_int(127, &mut buf).unwrap();
-        assert_eq!(buf, &[127]);
+        assert_eq!(buf.as_ref(), &[127][..]);
         let mut read_buf = buf.freeze();
         assert_eq!(read_var_int(&mut read_buf).unwrap(), 127);
     }
@@ -107,7 +108,7 @@ mod tests {
     fn round_trip_128() {
         let mut buf = BytesMut::new();
         write_var_int(128, &mut buf).unwrap();
-        assert_eq!(buf, &[128, 1]);
+        assert_eq!(buf.as_ref(), &[128, 1][..]);
         let mut read_buf = buf.freeze();
         assert_eq!(read_var_int(&mut read_buf).unwrap(), 128);
     }
@@ -116,7 +117,7 @@ mod tests {
     fn round_trip_minus_one() {
         let mut buf = BytesMut::new();
         write_var_int(-1, &mut buf).unwrap();
-        assert_eq!(buf, &[255, 255, 255, 255, 15]);
+        assert_eq!(buf.as_ref(), &[255, 255, 255, 255, 15][..]);
         let mut read_buf = buf.freeze();
         assert_eq!(read_var_int(&mut read_buf).unwrap(), -1);
     }

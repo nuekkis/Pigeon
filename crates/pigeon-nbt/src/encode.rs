@@ -1,4 +1,4 @@
-use crate::value::{Nbt, NbtCompound, NbtList, NbtTag, NbtValue};
+use crate::value::{Nbt, NbtTag, NbtValue};
 use bytes::BufMut;
 use thiserror::Error;
 
@@ -74,7 +74,7 @@ impl<'a, B: BufMut> NbtWriter<'a, B> {
     }
 
     fn put_string(&mut self, value: &str) -> Result<(), NbtEncodeError> {
-        let bytes = cesu8::encode_java(value);
+        let bytes = cesu8::to_java_cesu8(value);
         let len = bytes.len();
         if len > u16::MAX as usize {
             return Err(NbtEncodeError::Overflow);

@@ -110,7 +110,7 @@ impl Decoder for PacketCodec {
             if buf.len() <= self.decrypt_offset {
                 return Ok(None);
             }
-            let mut tail = buf.split_off(self.decrypt_offset);
+            let tail = buf.split_off(self.decrypt_offset);
             let mut chunk = tail.to_vec();
             cipher.decrypt(&mut chunk);
             buf.truncate(self.decrypt_offset);
@@ -187,7 +187,10 @@ impl Decoder for PacketCodec {
             }
         };
 
-        Ok(Some(DecodedPacket { id, payload }))
+        Ok(Some(DecodedPacket {
+            id: packet_id,
+            payload,
+        }))
     }
 }
 
