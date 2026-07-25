@@ -54,3 +54,42 @@ pub fn get(resource_location: &str) -> Option<&'static Block> {
 pub fn count() -> usize {
     blocks().len()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_without_panicking() {
+        assert!(count() > 1000, "expected 1.21.11 to define >1000 blocks");
+    }
+
+    #[test]
+    fn stone_has_default_state() {
+        let stone = get("minecraft:stone").expect("minecraft:stone must exist");
+        let default_count = stone.states.iter().filter(|s| s.default).count();
+        assert_eq!(
+            default_count, 1,
+            "minecraft:stone must have exactly one default state"
+        );
+        let default_state = stone.states.iter().find(|s| s.default).unwrap();
+        assert!(
+            stone.properties.is_empty() || !default_state.properties.is_empty(),
+            "default state must set every declared property",
+        );
+    }
+
+    #[test]
+    fn state_ids_are_unique_within_a_block() {
+        for (name, block) in blocks() {
+            let mut seen = std::collections::HashSet::new();
+            for state in &block.states {
+                assert!(
+                    seen.insert(state.id),
+                    "duplicate state id {} in {name}",
+                    state.id
+                );
+            }
+        }
+    }
+}

@@ -64,11 +64,34 @@ pub fn resource_location(registry: &str, id: i32) -> Option<&'static str> {
     get(registry).and_then(|r| {
         r.entries
             .iter()
-            .find_map(|(name, entry)| (entry.protocol_id == id).then(|| name.as_str()))
+            .find_map(|(name, entry)| (entry.protocol_id == id).then_some(name.as_str()))
     })
 }
 
 /// Returns the number of registries in the report.
 pub fn count() -> usize {
     registries().len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_without_panicking() {
+        assert!(count() > 50, "expected 1.21.11 to define >50 registries");
+    }
+
+    #[test]
+    fn entity_registry_is_present() {
+        let r = get("minecraft:entity_type").expect("entity_type registry must be present");
+        assert!(r.entries.len() > 100, "expected >100 entity types");
+        // Every entry should have a numeric protocol_id.
+        for (name, entry) in &r.entries {
+            assert!(
+                entry.protocol_id >= 0,
+                "entity {name} has negative protocol_id"
+            );
+        }
+    }
 }

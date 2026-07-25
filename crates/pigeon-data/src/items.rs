@@ -36,3 +36,24 @@ pub fn get(resource_location: &str) -> Option<&'static Item> {
 pub fn count() -> usize {
     items().len()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_without_panicking() {
+        assert!(count() > 1000, "expected 1.21.11 to define >1000 items");
+    }
+
+    #[test]
+    fn stone_item_has_components() {
+        let stone = get("minecraft:stone").expect("minecraft:stone item must exist");
+        assert!(stone.components.contains_key("minecraft:max_stack_size"));
+        assert_eq!(
+            stone.components["minecraft:max_stack_size"],
+            serde_json::Value::Number(64.into()),
+            "stone stack size must be 64",
+        );
+    }
+}

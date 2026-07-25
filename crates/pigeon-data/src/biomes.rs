@@ -62,3 +62,32 @@ pub fn nether() -> &'static BiomeParameterList {
             .expect("embedded nether biome parameters must be valid")
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_without_panicking() {
+        assert!(
+            !overworld().biomes.is_empty(),
+            "overworld biome list must be non-empty"
+        );
+        assert!(
+            !nether().biomes.is_empty(),
+            "nether biome list must be non-empty"
+        );
+    }
+
+    #[test]
+    fn overworld_contains_plains() {
+        let has_plains = overworld()
+            .biomes
+            .iter()
+            .any(|b| b.biome == "minecraft:plains");
+        assert!(
+            has_plains,
+            "minecraft:plains must be in the overworld biome list"
+        );
+    }
+}

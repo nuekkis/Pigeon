@@ -40,18 +40,18 @@ pub fn packets() -> &'static PacketReport {
 }
 
 /// Returns the named phase (e.g. `"play"`).
-pub fn phase(name: &str) -> Option<&'static Phase> {
+pub fn phase_named(name: &str) -> Option<&'static Phase> {
     packets().get(name)
 }
 
 /// Looks up the clientbound packet id for a given phase + resource location.
 pub fn clientbound_id(phase: &str, packet: &str) -> Option<i32> {
-    phase(phase).and_then(|p| p.clientbound.get(packet).map(|e| e.protocol_id))
+    phase_named(phase).and_then(|p| p.clientbound.get(packet).map(|e| e.protocol_id))
 }
 
 /// Looks up the serverbound packet id for a given phase + resource location.
 pub fn serverbound_id(phase: &str, packet: &str) -> Option<i32> {
-    phase(phase).and_then(|p| p.serverbound.get(packet).map(|e| e.protocol_id))
+    phase_named(phase).and_then(|p| p.serverbound.get(packet).map(|e| e.protocol_id))
 }
 
 /// Aggregates the total packet count across every phase and direction.
@@ -60,4 +60,26 @@ pub fn count() -> usize {
         .values()
         .map(|p| p.clientbound.len() + p.serverbound.len())
         .sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_without_panicking() {
+        assert!(count() > 200, "expected 1.21.11 to define >200 packets");
+        for phase_name in ["handshake", "status", "login", "configuration", "play"] {
+            assert!(
+                phase_named(phase_name).is_some(),
+                "phase {phase_name} must be present"
+            );
+        }
+    }
+
+    #[test]
+    fn play_keep_alive_ids_are_present() {
+        assert!(clientbound_id("play", "minecraft:keep_alive").is_some());
+        assert!(serverbound_id("play", "minecraft:keep_alive").is_some());
+    }
 }
