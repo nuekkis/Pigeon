@@ -199,6 +199,79 @@ impl PacketEncode for ResetChat {
 }
 
 // ---------------------------------------------------------------------------
+// S → C : Registry Data (id = 0x07)
+// ---------------------------------------------------------------------------
+
+/// Synchronize a single registry's contents to the client.
+///
+/// The body is the raw Mojang wire payload produced by
+/// [`pigeon_registry::RegistryCodec::encode`]; the packet just forwards
+/// those bytes after the id. This keeps the heavy registry serialization
+/// (VarStr identifiers + per-entry NBT roots) in the `pigeon-registry`
+/// crate where the typed `Registry<T>` machinery lives.
+///
+/// The `registry_codec` field is owned rather than borrowed so that the
+/// whole packet can be moved into the send queue without lifetime juggling.
+/// For pre-encoded payloads (e.g. cached vanilla registries) prefer the
+/// `from_bytes` constructor which skips re-serialization.
+#[derive(Debug, Clone)]
+pub struct RegistryData {
+    /// Pre-serialized wire body (the bytes that follow the packet id).
+    /// When constructed via [`Self::from_codec`] this is the output of
+    /// [`pigeon_registry::RegistryCodec::encode`].
+    pub body: Vec<u8>,
+}
+
+impl RegistryData {
+    /// Build the packet from a [`pigeon_registry::RegistryCodec`],
+    /// encoding it into a fresh byte vector.
+    pub fn from_codec(codec: &pigeon_registry::RegistryCodec) -> Result<Self, PacketSerError> {
+        let mut buf = bytes::BytesMut::with_capacity(256);
+        codec
+            .encode(&mut buf)
+            .map_err(registry_codec_err_to_packet_ser)?;
+        Ok(Self { body: buf.to_vec() })
+    }
+
+    /// Build the packet from an already-encoded registry body (for
+    /// example, a cached vanilla registry payload).
+    pub fn from_bytes(body: Vec<u8>) -> Self {
+        Self { body }
+    }
+}
+
+impl PacketEncode for RegistryData {
+    const ID: i32 = 0x07;
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
+        if buf.remaining_mut() < self.body.len() {
+            return Err(PacketSerError::Overflow);
+        }
+        buf.put_slice(&self.body);
+        Ok(())
+    }
+}
+
+/// Map a [`pigeon_registry::RegistryCodecError`] onto [`PacketSerError`].
+///
+/// The codec's error variants correspond closely to ours; identifiers and
+/// NBT-shaped failures become `InvalidValue`, while buffer sizing issues
+/// become `Overflow`/`Underflow`.
+fn registry_codec_err_to_packet_ser(err: pigeon_registry::RegistryCodecError) -> PacketSerError {
+    use pigeon_registry::RegistryCodecError as E;
+    match err {
+        E::Underflow => PacketSerError::Underflow,
+        E::Overflow => PacketSerError::Overflow,
+        E::InvalidEntryCount(_) => PacketSerError::InvalidValue,
+        E::UnexpectedRootName { .. } => PacketSerError::InvalidValue,
+        E::NbtDecode(_) | E::NbtEncode(_) => PacketSerError::InvalidValue,
+        E::VarInt(pigeon_codecs::VarIntReadError::Underflow)
+        | E::VarInt(pigeon_codecs::VarIntReadError::TooLarge) => PacketSerError::InvalidValue,
+        E::Identifier(_) => PacketSerError::InvalidValue,
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Complex clientbound packets (deferred to M5+)
 //
 // The remaining S → C packets carry heavy state bodies whose typed Rust
@@ -227,11 +300,6 @@ macro_rules! deferred_encode_packet {
     };
 }
 
-deferred_encode_packet!(
-    RegistryData,
-    0x07,
-    "S → C — synchronized registry contents."
-);
 deferred_encode_packet!(
     ResourcePackPop,
     0x08,

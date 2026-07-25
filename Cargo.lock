@@ -708,6 +708,7 @@ dependencies = [
  "pigeon-data",
  "pigeon-macros",
  "pigeon-nbt",
+ "pigeon-registry",
  "pigeon-text",
  "pigeon-util",
  "rand",
@@ -727,10 +728,15 @@ dependencies = [
 name = "pigeon-registry"
 version = "0.1.0"
 dependencies = [
+ "bytes",
  "indexmap",
  "parking_lot",
+ "pigeon-codecs",
  "pigeon-data",
+ "pigeon-nbt",
  "pigeon-util",
+ "serde",
+ "serde_json",
  "thiserror",
 ]
 
