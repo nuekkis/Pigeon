@@ -12,6 +12,10 @@
 //!
 //! Note: `HandshakeInt` is technically the very first packet of every
 //! connection (sent in the Handshake state) and is reused below.
+//!
+//! Wire ids are kept in sync with `pigeon-data`'s embedded `packets.json`
+//! report — see [`crate::java::ids::status`] for the canonical resource
+//! locations and `cargo test -p pigeon-protocol` for the regression check.
 
 use bytes::{Buf, BufMut};
 use serde::{Deserialize, Serialize};
@@ -40,6 +44,8 @@ pub enum NextState {
 }
 
 impl PacketDecode for HandshakeInt {
+    /// `minecraft:intention` — the only Handshake-state packet (verifiable via
+    /// [`crate::java::ids`]).
     const ID: i32 = 0x00;
 
     fn decode<B: Buf>(buf: &mut B) -> Result<Self, PacketSerError> {

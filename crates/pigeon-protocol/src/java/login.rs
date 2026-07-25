@@ -1,20 +1,24 @@
 //! Login-state packets.
 //!
-//! Packet IDs (Java 1.21.x):
+//! Packet IDs (Java 1.21.11 — frozen in `packets.json`):
 //!
-//! | Direction | ID   | Name                        |
-//! |-----------|------|------------------------------|
-//! | C → S     | 0x00 | LoginStart                   |
-//! | S → C     | 0x01 | EncryptionRequest          |
-//! | C → S     | 0x01 | EncryptionResponse         |
-//! | S → C     | 0x02 | LoginSuccess                |
-//! | S → C     | 0x03 | SetCompression          |
-//! | S → C     | 0x04 | Disconnect (Login)           |
-//! | C → S     | 0x02 | LoginPluginResponse      |
-//! | S → C     | 0x05 | LoginPluginRequest       |
-//! | C → S     | 0x03 | LoginAcknowledged      |
-//! | S → C     | 0x06 | CookieRequest (1.20.5+)    |
-//! | C → S     | 0x06 | CookieResponse (1.20.5+)   |
+//! | Direction | ID   | Name (canonical)              | Rust type           |
+//! |-----------|------|-------------------------------|---------------------|
+//! | C → S     | 0x00 | `minecraft:hello`             | `LoginStart`        |
+//! | S → C     | 0x00 | `minecraft:login_disconnect`  | `DisconnectLogin`   |
+//! | S → C     | 0x01 | `minecraft:hello`            | `EncryptionRequest` |
+//! | C → S     | 0x01 | `minecraft:key`               | `EncryptionResponse`|
+//! | S → C     | 0x02 | `minecraft:login_finished`    | `LoginSuccess`      |
+//! | S → C     | 0x03 | `minecraft:login_compression` | `SetCompression`    |
+//! | C → S     | 0x02 | `minecraft:custom_query_answer`| (LoginPluginResponse) |
+//! | S → C     | 0x04 | `minecraft:custom_query`     | (LoginPluginRequest) |
+//! | C → S     | 0x03 | `minecraft:login_acknowledged`| `LoginAcknowledged` |
+//! | S → C     | 0x05 | `minecraft:cookie_request`   | (CookieRequest)     |
+//! | C → S     | 0x04 | `minecraft:cookie_response`  | (CookieResponse)    |
+//!
+//! Wire ids are kept in sync with `pigeon-data`'s embedded `packets.json`
+//! report — see [`crate::java::ids::login`] and the regression tests in
+//! [`crate::java::ids`].
 
 use bytes::{Buf, BufMut};
 use serde::{Deserialize, Serialize};
@@ -177,16 +181,18 @@ impl PacketEncode for SetCompression {
 }
 
 // ---------------------------------------------------------------------------
-// S → C : Disconnect (Login) (id = 0x04)
+// S → C : Disconnect (Login) (id = 0x00 — `minecraft:login_disconnect`)
 // ---------------------------------------------------------------------------
 
+/// Login-phase disconnect. Wire id is **0** (not 4) in 1.21.11 — kept in
+/// sync with `packets.json` via [`crate::java::ids`].
 #[derive(Debug, Clone)]
 pub struct DisconnectLogin {
     pub reason_json: String,
 }
 
 impl PacketEncode for DisconnectLogin {
-    const ID: i32 = 0x04;
+    const ID: i32 = 0x00;
 
     fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
         crate::ser::write_string(&self.reason_json, buf, 262144)

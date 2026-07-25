@@ -6,6 +6,7 @@
 //! (serverbound-to-client) packets.
 
 pub mod client;
+pub mod ids;
 pub mod login;
 pub mod server;
 pub mod state;

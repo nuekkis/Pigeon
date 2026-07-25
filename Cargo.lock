@@ -705,6 +705,7 @@ dependencies = [
  "futures",
  "hmac",
  "pigeon-codecs",
+ "pigeon-data",
  "pigeon-macros",
  "pigeon-nbt",
  "pigeon-text",

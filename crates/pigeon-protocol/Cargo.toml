@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 pigeon-codecs      = { workspace = true }
+pigeon-data        = { workspace = true }
 pigeon-nbt         = { workspace = true }
 pigeon-util        = { workspace = true }
 pigeon-text        = { workspace = true }
