@@ -178,3 +178,149 @@ impl PacketEncode for PongResponse {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::BytesMut;
+
+    /// Helper: decode a packet body from a slice.
+    fn decode_from_bytes<T: PacketDecode>(bytes: &[u8]) -> Result<T, PacketSerError> {
+        let mut buf = bytes;
+        T::decode(&mut buf)
+    }
+
+    #[test]
+    fn handshake_decodes_status_intention() {
+        // VarInt(765) + String("127.0.0.1") + u16(25565 BE) + VarInt(1=status)
+        let mut wire = Vec::new();
+        pigeon_codecs::write_var_int(765, &mut wire).unwrap();
+        let mut s = BytesMut::new();
+        crate::ser::write_string("127.0.0.1", &mut s, 255).unwrap();
+        wire.extend_from_slice(&s);
+        wire.push(0x63); // 25565 split: high byte 0x63 (99)
+        wire.push(0xDD); // low byte 0xDD
+        pigeon_codecs::write_var_int(1, &mut wire).unwrap();
+        let decoded = decode_from_bytes::<HandshakeInt>(&wire).expect("decode must succeed");
+        assert_eq!(decoded.protocol_version, 765);
+        assert_eq!(decoded.server_address, "127.0.0.1");
+        assert_eq!(decoded.server_port, 25565);
+        assert_eq!(decoded.next_state, NextState::Status);
+    }
+
+    #[test]
+    fn handshake_decodes_login_intention() {
+        // VarInt(-3) + String("localhost") + u16(25565 BE) + VarInt(2=login)
+        let mut wire = Vec::new();
+        pigeon_codecs::write_var_int(-3, &mut wire).unwrap();
+        let mut s = BytesMut::new();
+        crate::ser::write_string("localhost", &mut s, 255).unwrap();
+        wire.extend_from_slice(&s);
+        wire.push(0x63);
+        wire.push(0xDD);
+        pigeon_codecs::write_var_int(2, &mut wire).unwrap();
+        let decoded = decode_from_bytes::<HandshakeInt>(&wire).expect("decode must succeed");
+        assert_eq!(decoded.protocol_version, -3);
+        assert_eq!(decoded.server_address, "localhost");
+        assert_eq!(decoded.next_state, NextState::Login);
+    }
+
+    #[test]
+    fn handshake_rejects_unknown_next_state() {
+        let mut wire = Vec::new();
+        pigeon_codecs::write_var_int(1, &mut wire).unwrap();
+        let mut s = BytesMut::new();
+        crate::ser::write_string("h", &mut s, 255).unwrap();
+        wire.extend_from_slice(&s);
+        wire.push(0);
+        wire.push(0);
+        pigeon_codecs::write_var_int(99, &mut wire).unwrap();
+        let err =
+            decode_from_bytes::<HandshakeInt>(&wire).expect_err("must reject invalid next_state");
+        assert!(matches!(err, PacketSerError::InvalidValue), "got {err:?}");
+    }
+
+    #[test]
+    fn status_request_decodes_empty_body() {
+        let decoded = decode_from_bytes::<StatusRequest>(&[]).expect("decode must succeed");
+        let _ = decoded;
+    }
+
+    #[test]
+    fn status_response_encodes_json_payload() {
+        let original = StatusResponse {
+            json_response: "{\"version\":{\"name\":\"1.21.11\",\"protocol\":765}}".to_string(),
+        };
+        let mut buf = BytesMut::new();
+        PacketEncode::encode(&original, &mut buf).expect("encode must succeed");
+        let bytes = buf.freeze();
+        assert!(!bytes.is_empty(), "body must not be empty");
+        // The body is a VarInt prefix (length) followed by the UTF-8 string.
+        let mut reader = bytes.as_ref();
+        let s = crate::ser::read_string(&mut reader, 32767).expect("must read string back");
+        assert_eq!(s, original.json_response);
+        assert!(reader.is_empty(), "no trailing bytes after string");
+    }
+
+    #[test]
+    fn ping_request_decodes_payload() {
+        let payload: u64 = 0xDEADBEEFCAFEBABE;
+        let wire = payload.to_be_bytes();
+        let decoded = decode_from_bytes::<PingRequest>(&wire).expect("decode must succeed");
+        assert_eq!(decoded.payload, payload);
+    }
+
+    #[test]
+    fn ping_request_rejects_short_body() {
+        let err = decode_from_bytes::<PingRequest>(&[0, 0, 0]).expect_err("short body must fail");
+        assert!(matches!(err, PacketSerError::Underflow), "got {err:?}");
+    }
+
+    #[test]
+    fn pong_response_encodes_payload_be() {
+        let original = PongResponse {
+            payload: 0x0102030405060708,
+        };
+        let mut buf = BytesMut::new();
+        PacketEncode::encode(&original, &mut buf).expect("encode must succeed");
+        let bytes = buf.freeze();
+        assert_eq!(bytes.len(), 8, "pong body must be exactly 8 bytes");
+        assert_eq!(&*bytes, &original.payload.to_be_bytes());
+    }
+
+    #[test]
+    fn status_table_wire_ids_match_data_report() {
+        // Cross-check the hardcoded ID consts against the canonical
+        // resource locations in `pigeon-data`'s embedded report.
+        assert_eq!(
+            pigeon_data::packets::serverbound_id(
+                "status",
+                crate::java::ids::status::STATUS_REQUEST
+            ),
+            Some(StatusRequest::ID),
+        );
+        assert_eq!(
+            pigeon_data::packets::clientbound_id(
+                "status",
+                crate::java::ids::status::STATUS_RESPONSE
+            ),
+            Some(StatusResponse::ID),
+        );
+        assert_eq!(
+            pigeon_data::packets::serverbound_id("status", crate::java::ids::status::PING_REQUEST),
+            Some(PingRequest::ID),
+        );
+        assert_eq!(
+            pigeon_data::packets::clientbound_id("status", crate::java::ids::status::PONG_RESPONSE),
+            Some(PongResponse::ID),
+        );
+        // The HandshakeIntention packet lives in the handshake phase.
+        assert_eq!(
+            pigeon_data::packets::serverbound_id(
+                "handshake",
+                crate::java::ids::handshake::INTENTION
+            ),
+            Some(HandshakeInt::ID),
+        );
+    }
+}
