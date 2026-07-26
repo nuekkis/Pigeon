@@ -272,81 +272,420 @@ fn registry_codec_err_to_packet_ser(err: pigeon_registry::RegistryCodecError) ->
 }
 
 // ---------------------------------------------------------------------------
-// Complex clientbound packets (deferred to M5+)
-//
-// The remaining S → C packets carry heavy state bodies whose typed Rust
-// representation is part of the upcoming world-data milestone (tag maps,
-// resource-pack metadata, dialog payloads, …). They are declared here
-// for visibility and to reserve the ids; their `encode` body returns
-// `todo!()` so attempts to use them surface clearly at runtime.
+// S → C : Resource Pack Pop (id = 0x08)
 // ---------------------------------------------------------------------------
+//
+// Removes a resource pack previously pushed with `ResourcePackPush`. If
+// the optional `uuid` is `None`, the client clears ALL resource packs.
 
-macro_rules! deferred_encode_packet {
-    ($name:ident, $id:expr, $doc:expr) => {
-        #[derive(Debug, Clone, Default)]
-        #[doc = $doc]
-        pub struct $name;
+use uuid::Uuid;
 
-        impl PacketEncode for $name {
-            const ID: i32 = $id;
-            fn encode<B: BufMut>(&self, _buf: &mut B) -> Result<(), PacketSerError> {
-                todo!(concat!(
-                    "encode body for `",
-                    stringify!($name),
-                    "` lands in M5+"
-                ));
-            }
-        }
-    };
+/// Remove resource pack(s) from the client. `uuid = None` means "clear all".
+#[derive(Debug, Clone)]
+pub struct ResourcePackPop {
+    pub uuid: Option<Uuid>,
 }
 
-deferred_encode_packet!(
-    ResourcePackPop,
-    0x08,
-    "S → C — pop a previously pushed resource pack."
-);
-deferred_encode_packet!(
-    ResourcePackPush,
-    0x09,
-    "S → C — push a resource pack to the client."
-);
-deferred_encode_packet!(StoreCookie, 0x0A, "S → C — store a cookie on the client.");
-deferred_encode_packet!(
-    Transfer,
-    0x0B,
-    "S → C — transfer the client to another host."
-);
-deferred_encode_packet!(
-    UpdateEnabledFeatures,
-    0x0C,
-    "S → C — update the set of enabled gameplay features."
-);
-deferred_encode_packet!(UpdateTags, 0x0D, "S → C — synchronize all tag registries.");
-deferred_encode_packet!(
-    SelectKnownPacks,
-    0x0E,
-    "S → C — ask the client which known-packs it has."
-);
-deferred_encode_packet!(
-    CustomReportDetails,
-    0x0F,
-    "S → C — custom report metadata for telemetry."
-);
-deferred_encode_packet!(
-    ServerLinks,
-    0x10,
-    "S → C — server link graph (support URLs, etc)."
-);
-deferred_encode_packet!(ClearDialog, 0x11, "S → C — close a currently-open dialog.");
-deferred_encode_packet!(ShowDialog, 0x12, "S → C — open a client dialog.");
-deferred_encode_packet!(
-    CodeOfConduct,
-    0x13,
-    "S → C — server's code of conduct text."
-);
+impl PacketEncode for ResourcePackPop {
+    const ID: i32 = 0x08;
 
-// ===========================================================================
-// Serverbound (C → S)
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
+        match self.uuid {
+            Some(uuid) => {
+                if buf.remaining_mut() < 1 {
+                    return Err(PacketSerError::Overflow);
+                }
+                buf.put_u8(1);
+                crate::ser::write_uuid(uuid, buf)
+            }
+            None => {
+                if buf.remaining_mut() < 1 {
+                    return Err(PacketSerError::Overflow);
+                }
+                buf.put_u8(0);
+                Ok(())
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S → C : Resource Pack Push (id = 0x09)
+// ---------------------------------------------------------------------------
+
+/// Push a resource pack to the client.
+///
+/// `forced` requests the client download without prompting; `prompt_message`
+/// is an optional chat component used as the prompt text.
+#[derive(Debug, Clone)]
+pub struct ResourcePackPush {
+    pub uuid: Uuid,
+    pub url: String,
+    pub hash: String,
+    pub forced: bool,
+    /// Optional chat-component prompt message (encoded as a present-flag byte
+    /// followed by NBT compound when `Some`).
+    pub prompt_message: Option<pigeon_nbt::NbtCompound>,
+}
+
+impl PacketEncode for ResourcePackPush {
+    const ID: i32 = 0x09;
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
+        crate::ser::write_uuid(self.uuid, buf)?;
+        crate::ser::write_string(&self.url, buf, 32767)?;
+        crate::ser::write_string(&self.hash, buf, 32767)?;
+        if buf.remaining_mut() < 1 {
+            return Err(PacketSerError::Overflow);
+        }
+        buf.put_u8(self.forced as u8);
+        match &self.prompt_message {
+            Some(compound) => {
+                if buf.remaining_mut() < 1 {
+                    return Err(PacketSerError::Overflow);
+                }
+                buf.put_u8(1);
+                let nbt = pigeon_nbt::Nbt::new(String::new(), compound.clone());
+                pigeon_nbt::NbtWriter::new(buf)
+                    .write_root(&nbt)
+                    .map_err(|_| PacketSerError::InvalidValue)?;
+            }
+            None => {
+                if buf.remaining_mut() < 1 {
+                    return Err(PacketSerError::Overflow);
+                }
+                buf.put_u8(0);
+            }
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S → C : Store Cookie (id = 0x0A)
+// ---------------------------------------------------------------------------
+
+/// Ask the client to persist a cookie under `key` with the supplied `value`
+/// (a VarInt-prefixed byte array).
+///
+/// Cookie responses are returned in the matching phase via the
+/// `CookieResponse` serverbound packet.
+#[derive(Debug, Clone)]
+pub struct StoreCookie {
+    pub key: String,
+    pub value: Vec<u8>,
+}
+
+impl PacketEncode for StoreCookie {
+    const ID: i32 = 0x0A;
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
+        crate::ser::write_string(&self.key, buf, 32767)?;
+        pigeon_codecs::write_var_int(self.value.len() as i32, buf)?;
+        if buf.remaining_mut() < self.value.len() {
+            return Err(PacketSerError::Overflow);
+        }
+        buf.put_slice(&self.value);
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S → C : Transfer (id = 0x0B)
+// ---------------------------------------------------------------------------
+
+/// Instruct the client to immediately reconnect at `host:port` after this
+/// packet is processed.
+#[derive(Debug, Clone)]
+pub struct Transfer {
+    pub host: String,
+    pub port: u16,
+}
+
+impl PacketEncode for Transfer {
+    const ID: i32 = 0x0B;
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
+        crate::ser::write_string(&self.host, buf, 32767)?;
+        Ok(pigeon_codecs::write_var_int(self.port as i32, buf)?)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S → C : Update Enabled Features (id = 0x0C)
+// ---------------------------------------------------------------------------
+
+/// Synchronize the set of enabled gameplay feature flags
+/// (e.g. `minecraft:vanilla`).
+#[derive(Debug, Clone, Default)]
+pub struct UpdateEnabledFeatures {
+    pub features: Vec<String>,
+}
+
+impl PacketEncode for UpdateEnabledFeatures {
+    const ID: i32 = 0x0C;
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
+        pigeon_codecs::write_var_int(self.features.len() as i32, buf)?;
+        for feature in &self.features {
+            crate::ser::write_string(feature, buf, 32767)?;
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S → C : Update Tags (id = 0x0D)
+// ---------------------------------------------------------------------------
+
+/// A single tag (a named id-list) within a tag registry.
+///
+/// Wire layout: `tag_name: String`, `entries: Vec<VarInt>` — those VarInts
+/// are protocol ids of the entries the tag contains.
+#[derive(Debug, Clone)]
+pub struct Tag {
+    pub name: String,
+    pub entries: Vec<i32>,
+}
+
+/// A tag registry (e.g. `minecraft:items`, `minecraft:blocks`) carrying a
+/// set of tags.
+#[derive(Debug, Clone)]
+pub struct TagRegistry {
+    pub registry: String,
+    pub tags: Vec<Tag>,
+}
+
+/// Synchronize all tag registries to the client in one go.
+///
+/// This is a large packet — for vanilla 1.21.x it bundles ~80 tag
+/// registries, each with multiple tags containing thousands of ids. It is
+/// emitted at the very end of configuration before `FinishConfiguration`.
+#[derive(Debug, Clone, Default)]
+pub struct UpdateTags {
+    pub registries: Vec<TagRegistry>,
+}
+
+impl PacketEncode for UpdateTags {
+    const ID: i32 = 0x0D;
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
+        pigeon_codecs::write_var_int(self.registries.len() as i32, buf)?;
+        for registry in &self.registries {
+            crate::ser::write_string(&registry.registry, buf, 32767)?;
+            pigeon_codecs::write_var_int(registry.tags.len() as i32, buf)?;
+            for tag in &registry.tags {
+                crate::ser::write_string(&tag.name, buf, 32767)?;
+                pigeon_codecs::write_var_int(tag.entries.len() as i32, buf)?;
+                for entry in &tag.entries {
+                    pigeon_codecs::write_var_int(*entry, buf)?;
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S → C : Select Known Packs (id = 0x0E)
+// ---------------------------------------------------------------------------
+
+/// A (namespace, id, version) tuple identifying a datapack known to the
+/// server.
+#[derive(Debug, Clone)]
+pub struct KnownPack {
+    pub namespace: String,
+    pub id: String,
+    pub version: String,
+}
+
+/// Ask the client which of the supplied known-packs it already has cached
+/// locally so the server can avoid re-sending their data.
+///
+/// The client responds with the subset it actually has via the serverbound
+/// `SelectKnownPacksAck` packet (id 0x07).
+#[derive(Debug, Clone, Default)]
+pub struct SelectKnownPacks {
+    pub packs: Vec<KnownPack>,
+}
+
+impl PacketEncode for SelectKnownPacks {
+    const ID: i32 = 0x0E;
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
+        pigeon_codecs::write_var_int(self.packs.len() as i32, buf)?;
+        for pack in &self.packs {
+            crate::ser::write_string(&pack.namespace, buf, 32767)?;
+            crate::ser::write_string(&pack.id, buf, 32767)?;
+            crate::ser::write_string(&pack.version, buf, 32767)?;
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S → C : Custom Report Details (id = 0x0F)
+// ---------------------------------------------------------------------------
+
+/// A single `key -> value` pair in the custom report details payload.
+#[derive(Debug, Clone)]
+pub struct CustomReportEntry {
+    pub key: String,
+    pub value: String,
+}
+
+/// Pairs of (key, value) shipped to the client so it can attach custom
+/// context to outbound telemetry/crash reports.
+#[derive(Debug, Clone, Default)]
+pub struct CustomReportDetails {
+    pub details: Vec<CustomReportEntry>,
+}
+
+impl PacketEncode for CustomReportDetails {
+    const ID: i32 = 0x0F;
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
+        pigeon_codecs::write_var_int(self.details.len() as i32, buf)?;
+        for entry in &self.details {
+            crate::ser::write_string(&entry.key, buf, 32767)?;
+            crate::ser::write_string(&entry.value, buf, 32767)?;
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S → C : Server Links (id = 0x10)
+// ---------------------------------------------------------------------------
+
+/// Built-in Mojang-known server link kinds.
+///
+/// Wire-encoded as the small enum id; the unmapped variants ship an
+/// `unknownType` chat component instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum ServerLinkKind {
+    BugReport = 0,
+    CommunityGuidelines = 1,
+    Support = 2,
+    Status = 3,
+    Feedback = 4,
+    Community = 5,
+    Website = 6,
+    Forums = 7,
+    News = 8,
+    Announcements = 9,
+}
+
+/// A single server link: either a built-in known kind or an arbitrary
+/// chat-component label, plus the URL string.
+#[derive(Debug, Clone)]
+pub enum ServerLinkLabel {
+    Known(ServerLinkKind),
+    /// A chat component (encoded as NBT) when the label is custom.
+    Unknown(pigeon_nbt::NbtCompound),
+}
+
+#[derive(Debug, Clone)]
+pub struct ServerLink {
+    pub label: ServerLinkLabel,
+    pub url: String,
+}
+
+/// Send the client a list of clickable server links (e.g. bug report URL,
+/// support URL, community guidelines …).
+#[derive(Debug, Clone, Default)]
+pub struct ServerLinks {
+    pub links: Vec<ServerLink>,
+}
+
+impl PacketEncode for ServerLinks {
+    const ID: i32 = 0x10;
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
+        pigeon_codecs::write_var_int(self.links.len() as i32, buf)?;
+        for link in &self.links {
+            match &link.label {
+                ServerLinkLabel::Known(kind) => {
+                    if buf.remaining_mut() < 1 {
+                        return Err(PacketSerError::Overflow);
+                    }
+                    buf.put_u8(1);
+                    pigeon_codecs::write_var_int(*kind as i32, buf)?;
+                }
+                ServerLinkLabel::Unknown(compound) => {
+                    if buf.remaining_mut() < 1 {
+                        return Err(PacketSerError::Overflow);
+                    }
+                    buf.put_u8(0);
+                    let nbt = pigeon_nbt::Nbt::new(String::new(), compound.clone());
+                    pigeon_nbt::NbtWriter::new(buf)
+                        .write_root(&nbt)
+                        .map_err(|_| PacketSerError::InvalidValue)?;
+                }
+            }
+            crate::ser::write_string(&link.url, buf, 32767)?;
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S → C : Clear Dialog (id = 0x11)
+// ---------------------------------------------------------------------------
+
+/// Closes any currently-open client dialog.
+#[derive(Debug, Clone, Default)]
+pub struct ClearDialog;
+
+impl PacketEncode for ClearDialog {
+    const ID: i32 = 0x11;
+
+    fn encode<B: BufMut>(&self, _buf: &mut B) -> Result<(), PacketSerError> {
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S → C : Show Dialog (id = 0x12)
+// ---------------------------------------------------------------------------
+
+/// Open a client-side dialog identified by an NBT compound (root name `""`).
+#[derive(Debug, Clone)]
+pub struct ShowDialog {
+    pub dialog: pigeon_nbt::NbtCompound,
+}
+
+impl PacketEncode for ShowDialog {
+    const ID: i32 = 0x12;
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
+        let nbt = pigeon_nbt::Nbt::new(String::new(), self.dialog.clone());
+        pigeon_nbt::NbtWriter::new(buf)
+            .write_root(&nbt)
+            .map_err(|_| PacketSerError::InvalidValue)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// S → C : Code of Conduct (id = 0x13)
+// ---------------------------------------------------------------------------
+
+/// Ship the server's code-of-conduct text to the client (chat component
+/// encoded as a JSON string).
+#[derive(Debug, Clone)]
+pub struct CodeOfConduct {
+    pub contents: String,
+}
+
+impl PacketEncode for CodeOfConduct {
+    const ID: i32 = 0x13;
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
+        crate::ser::write_string(&self.contents, buf, 32767)
+    }
+}
+
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
@@ -561,48 +900,141 @@ impl PacketDecode for Pong {
 }
 
 // ---------------------------------------------------------------------------
-// Remaining serverbound packets (deferred to M5+)
+// C → S : Resource Pack Status (id = 0x06)
 // ---------------------------------------------------------------------------
 
-macro_rules! deferred_decode_packet {
-    ($name:ident, $id:expr, $doc:expr) => {
-        #[derive(Debug, Clone, Default)]
-        #[doc = $doc]
-        pub struct $name;
-
-        impl PacketDecode for $name {
-            const ID: i32 = $id;
-            fn decode<B: Buf>(_buf: &mut B) -> Result<Self, PacketSerError> {
-                todo!(concat!(
-                    "decode body for `",
-                    stringify!($name),
-                    "` lands in M5+"
-                ));
-            }
-        }
-    };
+/// Outcome the client reports for a pushed resource pack. The numeric ids
+/// follow Mojang's vanilla enum ordering.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(i32)]
+pub enum ResourcePackResult {
+    /// Server successfully applied the pack.
+    Accepted = 0,
+    /// Server refused the pack.
+    Declined = 1,
+    /// Download failed.
+    FailedDownload = 2,
+    /// Pack downloaded successfully.
+    SuccessfullyLoaded = 3,
 }
 
-deferred_decode_packet!(
-    ResourcePackStatus,
-    0x06,
-    "C → S — resource-pack status update."
-);
-deferred_decode_packet!(
-    SelectKnownPacksAck,
-    0x07,
-    "C → S — reply to `SelectKnownPacks`."
-);
-deferred_decode_packet!(
-    CustomClickAction,
-    0x08,
-    "C → S — custom click action (1.21.6+)."
-);
-deferred_decode_packet!(
-    AcceptCodeOfConduct,
-    0x09,
-    "C → S — client accepts the code of conduct."
-);
+impl ResourcePackResult {
+    pub fn from_i32(v: i32) -> Result<Self, PacketSerError> {
+        Ok(match v {
+            0 => Self::Accepted,
+            1 => Self::Declined,
+            2 => Self::FailedDownload,
+            3 => Self::SuccessfullyLoaded,
+            _ => return Err(PacketSerError::InvalidValue),
+        })
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ResourcePackStatus {
+    pub uuid: Uuid,
+    pub result: ResourcePackResult,
+}
+
+impl PacketDecode for ResourcePackStatus {
+    const ID: i32 = 0x06;
+
+    fn decode<B: Buf>(buf: &mut B) -> Result<Self, PacketSerError> {
+        let uuid = crate::ser::read_uuid(buf)?;
+        let raw = pigeon_codecs::read_var_int(buf)?;
+        Ok(Self {
+            uuid,
+            result: ResourcePackResult::from_i32(raw)?,
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C → S : Select Known Packs Ack (id = 0x07)
+// ---------------------------------------------------------------------------
+
+/// Reply to the server's `SelectKnownPacks`: the subset of packs the
+/// client already has cached locally. The structure mirrors
+/// `SelectKnownPacks` itself: an array of (namespace, id, version).
+#[derive(Debug, Clone, Default)]
+pub struct SelectKnownPacksAck {
+    pub packs: Vec<KnownPack>,
+}
+
+impl PacketDecode for SelectKnownPacksAck {
+    const ID: i32 = 0x07;
+
+    fn decode<B: Buf>(buf: &mut B) -> Result<Self, PacketSerError> {
+        let count = pigeon_codecs::read_var_int(buf)?;
+        if !(0..=4096).contains(&count) {
+            return Err(PacketSerError::InvalidValue);
+        }
+        let mut packs = Vec::with_capacity(count as usize);
+        for _ in 0..count {
+            let namespace = crate::ser::read_string(buf, 32767)?;
+            let id = crate::ser::read_string(buf, 32767)?;
+            let version = crate::ser::read_string(buf, 32767)?;
+            packs.push(KnownPack {
+                namespace,
+                id,
+                version,
+            });
+        }
+        Ok(Self { packs })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C → S : Custom Click Action (id = 0x08)
+// ---------------------------------------------------------------------------
+
+/// Reply from a custom-click-action dialog: the action id plus an optional
+/// NBT compound of arbitrary client-side data.
+#[derive(Debug, Clone)]
+pub struct CustomClickAction {
+    pub id: String,
+    pub nbt: Option<pigeon_nbt::NbtCompound>,
+}
+
+impl PacketDecode for CustomClickAction {
+    const ID: i32 = 0x08;
+
+    fn decode<B: Buf>(buf: &mut B) -> Result<Self, PacketSerError> {
+        let id = crate::ser::read_string(buf, 32767)?;
+        let has_nbt = if buf.remaining() < 1 {
+            return Err(PacketSerError::Underflow);
+        } else {
+            buf.get_u8() != 0
+        };
+        let nbt = if has_nbt {
+            let nbt = pigeon_nbt::NbtReader::new(buf)
+                .read_root()
+                .map_err(|_| PacketSerError::InvalidValue)?;
+            // Root name conventionally empty for these transmissions.
+            Some(nbt.root)
+        } else {
+            None
+        };
+        Ok(Self { id, nbt })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// C → S : Accept Code of Conduct (id = 0x09)
+// ---------------------------------------------------------------------------
+
+/// Acknowledgement from the client that it has accepted the server's
+/// code of conduct. There is no body.
+#[derive(Debug, Clone, Default)]
+pub struct AcceptCodeOfConduct;
+
+impl PacketDecode for AcceptCodeOfConduct {
+    const ID: i32 = 0x09;
+
+    fn decode<B: Buf>(_buf: &mut B) -> Result<Self, PacketSerError> {
+        Ok(Self)
+    }
+}
 
 #[cfg(test)]
 mod tests {
