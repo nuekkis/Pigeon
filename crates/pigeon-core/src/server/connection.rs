@@ -3,15 +3,18 @@
 //! A `Connection` owns the TCP stream + codec and progresses through:
 //! `Handshake → Status / Login → (Configuration → Play)`.
 //!
-//! This milestone (M3) wires up Handshake + Status end-to-end so a
-//! Minecraft 1.21.11 client can perform a server-list ping and see the
-//! configured motd. Login + Configuration + Play handlers are seeded
-//! as TODO markers for M4+.
+//! M3 wires up Handshake + Status end-to-end so a Minecraft 1.21.11
+//! client can perform a server-list ping and see the configured motd.
+//! M4 adds the offline (online-mode=false) Login sequence:
+//! `LoginStart → SetCompression (optional) → LoginSuccess →
+//! LoginAcknowledged → Configuration`. The encryption request path
+//! (online-mode=true) waits on the Mojang session-server integration
+//! that lives in a later milestone.
 
 use anyhow::{anyhow, Result};
 use pigeon_config::ServerConfig;
 use pigeon_protocol::codec::PacketCodec;
-use pigeon_protocol::java::{login, status, ProtocolState};
+use pigeon_protocol::java::{configuration, login, status, ProtocolState};
 use pigeon_protocol::ser::{PacketDecode, PacketEncode};
 use pigeon_protocol::{DecodedPacket, EncodedPacket};
 use std::net::SocketAddr;
@@ -19,16 +22,43 @@ use std::sync::Arc;
 use tokio::net::TcpStream;
 use tokio_util::codec::Framed;
 
-/// Protocol version the server presents on status pings.
-/// The actual wire id is determined by `pigeon-data::protocol_version()`.
-/// For 1.21.11 this still resolves to a placeholder value until we
-/// cross-check against `packets.json`; vanilla clients tolerate `-1`
-/// by showing "can't connect" but use the version string for display.
+use futures::SinkExt;
+use futures::StreamExt;
+
+/// Protocol version the server presents on status pings. The real
+/// value for 1.21.11 is determined by `pigeon-data::protocol_version()`;
+/// the placeholder here is replaced once the data report cross-check
+/// for the live `packets.json` lands.
 const PROTOCOL_VERSION_1_21_11: i32 = 0;
 
 /// Players reported in the status ping. M3 reports `0/0`; the real
 /// count is wired in M6 alongside the player registry.
 const STATUS_PLAYERS_ONLINE: u32 = 0;
+
+/// Drop-in helper to push an `EncodedPacket` built from an `id` + raw
+/// body through the framed stream, returning any send error.
+async fn send_packet(
+    framed: &mut Framed<TcpStream, PacketCodec>,
+    encoded: EncodedPacket,
+    peer: SocketAddr,
+    state: ProtocolState,
+) -> Result<()> {
+    if let Err(err) = framed.send(encoded).await {
+        tracing::debug!(%peer, state = state.as_str(), %err, "send error");
+        return Err(anyhow!(err.to_string()));
+    }
+    Ok(())
+}
+
+/// Encode a typed `PacketEncode` packet into a fresh `EncodedPacket`.
+fn encode_packet<T: PacketEncode>(pkt: &T, peer: SocketAddr) -> Result<EncodedPacket> {
+    let mut buf = bytes::BytesMut::new();
+    pkt.encode(&mut buf).map_err(|e| {
+        tracing::debug!(%peer, encode_err = %e, "encode failed");
+        anyhow!(e.to_string())
+    })?;
+    Ok(EncodedPacket::new(T::ID, buf.freeze()))
+}
 
 pub struct Connection;
 
@@ -63,40 +93,64 @@ impl Connection {
 
             tracing::debug!(%peer, state = state.as_str(), id = packet.id, len = packet.payload.len(), "inbound packet");
 
-            // Dispatch based on the current state.
-            let reply = match state {
-                ProtocolState::Handshake => handle_handshake(packet, &mut state)?,
-                ProtocolState::Status => handle_status(packet, &config, &mut state)?,
-                ProtocolState::Login => handle_login(packet, &config, &mut state)?,
+            match state {
+                ProtocolState::Handshake => {
+                    handle_handshake(packet, &mut state)?;
+                }
+                ProtocolState::Status => {
+                    if let Some(encoded) = handle_status(packet, &config)? {
+                        send_packet(&mut framed, encoded, peer, state).await?;
+                    }
+                }
+                ProtocolState::Login => {
+                    // The login sequence spans multiple packets and may
+                    // need to flip compression on the codec mid-flow, so
+                    // it gets its own async sub-handler that finishes
+                    // when the client either transitions to Configuration
+                    // or disconnects.
+                    let next = handle_login(packet, &config, &mut framed, peer).await?;
+                    state = next;
+                    if state == ProtocolState::Configuration {
+                        // Fall through to the configuration loop when M5 lands;
+                        // for now we end the connection politely.
+                        tracing::info!(%peer, "login complete → configuration (M5 will continue)");
+                        // Send a brand CustomPayload so the client logs it
+                        // before we close, giving quick visual confirmation
+                        // when testing against a real Minecraft client.
+                        let brand = configuration::CustomPayload {
+                            channel: "minecraft:brand".to_string(),
+                            data: b"PigeonMC\0".to_vec(),
+                        };
+                        if let Ok(enc) = encode_packet(&brand, peer) {
+                            let _ = send_packet(&mut framed, enc, peer, state).await;
+                        }
+                        // Then disconnect so the test client cleanly exits.
+                        let reason = configuration::Disconnect {
+                            reason_json: r#"{"text":"PigeonMC M4 reached configuration boundary"}"#
+                                .to_string(),
+                        };
+                        if let Ok(enc) = encode_packet(&reason, peer) {
+                            let _ = send_packet(&mut framed, enc, peer, state).await;
+                        }
+                        return Ok(());
+                    }
+                }
                 ProtocolState::Configuration => {
-                    tracing::debug!(%peer, "configuration not wired yet");
+                    tracing::debug!(%peer, "configuration loop not wired yet (M5)");
                     return Ok(());
                 }
                 ProtocolState::Play => {
-                    tracing::debug!(%peer, "play not wired yet");
+                    tracing::debug!(%peer, "play not wired yet (M6+)");
                     return Ok(());
-                }
-            };
-
-            if let Some(encoded) = reply {
-                if let Err(err) = framed.send(encoded).await {
-                    tracing::debug!(%peer, state = state.as_str(), %err, "send error");
-                    return Err(anyhow!(err.to_string()));
                 }
             }
         }
     }
 }
 
-use futures::SinkExt;
-use futures::StreamExt;
-
-/// Result of dispatching one packet to a handler.
-type HandlerReply = Option<EncodedPacket>;
-
 /// Decode the Handshake packet, then transition to the next state it
 /// requests. No outbound packet is emitted in response.
-fn handle_handshake(packet: DecodedPacket, state: &mut ProtocolState) -> Result<HandlerReply> {
+fn handle_handshake(packet: DecodedPacket, state: &mut ProtocolState) -> Result<()> {
     if packet.id != status::HandshakeInt::ID {
         return Err(anyhow!(
             "expected handshake packet (id 0x00) in Handshake state, got 0x{:02x}",
@@ -119,53 +173,126 @@ fn handle_handshake(packet: DecodedPacket, state: &mut ProtocolState) -> Result<
         status::NextState::Login => ProtocolState::Login,
     };
 
-    Ok(None)
+    Ok(())
 }
 
 /// Handle the two-packet Status phase: StatusRequest then PingRequest.
-/// After responding to Ping the connection should close.
-fn handle_status(
-    packet: DecodedPacket,
-    config: &ServerConfig,
-    state: &mut ProtocolState,
-) -> Result<HandlerReply> {
-    tracing::debug!(id = packet.id, "status packet received");
-    let pid = packet.id;
-    let reply = route_status(packet, config, STATUS_PLAYERS_ONLINE)?;
-    if reply.is_some() {
-        tracing::debug!(id = pid, "status replied");
-    }
-    let _ = state;
-    Ok(reply)
+fn handle_status(packet: DecodedPacket, config: &ServerConfig) -> Result<Option<EncodedPacket>> {
+    route_status(packet, config, STATUS_PLAYERS_ONLINE)
 }
 
-/// Login-phase entry. M3 only logs the inbound packet; the full
-/// encryption + profile exchange + Login Success / Set Compression /
-/// Transition-to-Configuration sequence is wired in M4.
-fn handle_login(
-    packet: DecodedPacket,
-    _config: &ServerConfig,
-    state: &mut ProtocolState,
-) -> Result<HandlerReply> {
-    if packet.id == login::LoginStart::ID {
-        let mut cursor = std::io::Cursor::new(packet.payload);
-        let login_start =
-            login::LoginStart::decode(&mut cursor).map_err(|e| anyhow!(e.to_string()))?;
-        tracing::info!(
-            username = %login_start.name,
-            uuid = %login_start.uuid,
-            "login start received (M4 will complete login)"
-        );
-        // For M3 we simply close the connection. The client will see
-        // "Connection lost" until M4 emits Disconnect or LoginSuccess.
-        *state = ProtocolState::Login;
-        return Ok(None);
+/// Login-phase driver. Handles the offline (online-mode=false) flow:
+///
+/// 1. read `LoginStart`
+/// 2. send `SetCompression` (if `config.network.compression_threshold >= 0`) and
+///    flip the codec's compression on
+/// 3. send `LoginSuccess` carrying the player's name + uuid
+/// 4. read `LoginAcknowledged` from the client
+/// 5. return `ProtocolState::Configuration`
+///
+/// Online-mode=true will require the `EncryptionRequest`/`EncryptionResponse`
+/// round-trip + Mojang `sessionserver/minecraft/join` lookup, which lands
+/// alongside the player profile cache in M6+.
+async fn handle_login(
+    first_packet: DecodedPacket,
+    config: &ServerConfig,
+    framed: &mut Framed<TcpStream, PacketCodec>,
+    peer: SocketAddr,
+) -> Result<ProtocolState> {
+    // Step 1: must be a LoginStart.
+    if first_packet.id != login::LoginStart::ID {
+        tracing::debug!(%peer, id = first_packet.id, "expected login start");
+        // Send a login disconnect and bail.
+        let _ = send_login_disconnect(framed, peer, "Expected LoginStart.").await;
+        return Ok(ProtocolState::Login);
     }
-    tracing::debug!(
-        id = packet.id,
-        "ignoring non-LoginStart packet in Login state (M4)"
+    let mut cursor = std::io::Cursor::new(first_packet.payload);
+    let login_start = login::LoginStart::decode(&mut cursor).map_err(|e| anyhow!(e.to_string()))?;
+    tracing::info!(
+        username = %login_start.name,
+        uuid = %login_start.uuid,
+        online_mode = config.login.online_mode,
+        "login start received"
     );
-    Ok(None)
+
+    // For now only the offline path is implemented. When online_mode is
+    // enabled the connection is dropped with a clear log line until the
+    // Mojang sessionserver integration lands.
+    if config.login.online_mode {
+        tracing::warn!(%peer, "online-mode=true is not supported yet (M6+); disconnecting");
+        let _ = send_login_disconnect(
+            framed,
+            peer,
+            "PigeonMC online-mode is not yet implemented. Set online_mode=false in your config.",
+        )
+        .await;
+        return Ok(ProtocolState::Login);
+    }
+
+    // Step 2: optional SetCompression. We always emit it when the
+    // configured threshold is non-negative, then flip the codec so all
+    // subsequent frames are subject to the threshold.
+    let threshold = config.network.compression_threshold;
+    if threshold >= 0 {
+        tracing::debug!(%peer, threshold, "sending set compression");
+        let pkt = login::SetCompression { threshold };
+        let enc = encode_packet(&pkt, peer)?;
+        send_packet(framed, enc, peer, ProtocolState::Login).await?;
+        framed.codec_mut().set_compression(threshold);
+    }
+
+    // Step 3: LoginSuccess with the player's name + uuid (no Mojang
+    // properties for offline mode).
+    tracing::info!(%peer, username = %login_start.name, "login success sent (offline)");
+    let success = login::LoginSuccess {
+        uuid: login_start.uuid,
+        username: login_start.name.clone(),
+        properties: Vec::new(),
+    };
+    let enc = encode_packet(&success, peer)?;
+    send_packet(framed, enc, peer, ProtocolState::Login).await?;
+
+    // Step 4: wait for the client to acknowledge by sending
+    // `LoginAcknowledged` (id 0x03 in login state). The client may also
+    // send a LoginPluginResponse (id 0x02) or CookieResponse (id 0x04)
+    // if a plugin request was outstanding — we just log and keep
+    // reading until we see the ack.
+    loop {
+        let next = match framed.next().await {
+            Some(Ok(packet)) => packet,
+            Some(Err(err)) => {
+                tracing::debug!(%peer, %err, "decode error while awaiting LoginAcknowledged");
+                return Err(anyhow!(err.to_string()));
+            }
+            None => {
+                tracing::debug!(%peer, "client closed during login ack wait");
+                return Ok(ProtocolState::Login);
+            }
+        };
+        tracing::debug!(%peer, id = next.id, "post-login packet");
+        if next.id == login::LoginAcknowledged::ID {
+            tracing::info!(%peer, "login acknowledged — transition to configuration");
+            return Ok(ProtocolState::Configuration);
+        }
+        // Any other packet: log + keep waiting.
+        tracing::debug!(%peer, id = next.id, "ignoring while awaiting LoginAcknowledged");
+    }
+}
+
+/// Send a `DisconnectLogin` carrying `reason_json` (a Minecraft chat JSON
+/// string) and flush.
+async fn send_login_disconnect(
+    framed: &mut Framed<TcpStream, PacketCodec>,
+    peer: SocketAddr,
+    reason: &str,
+) -> Result<()> {
+    tracing::info!(%peer, reason, "login disconnect");
+    let payload = serde_json::json!({ "text": reason }).to_string();
+    let pkt = login::DisconnectLogin {
+        reason_json: payload,
+    };
+    let enc = encode_packet(&pkt, peer)?;
+    send_packet(framed, enc, peer, ProtocolState::Login).await
 }
 
 /// Builds a server list ping response from `config`.

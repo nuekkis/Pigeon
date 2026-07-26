@@ -64,7 +64,7 @@ impl Default for ServerConfig {
                 favicon: None,
             },
             login: LoginSection {
-                online_mode: true,
+                online_mode: false,
                 prevent_proxy_connections: false,
             },
         }
