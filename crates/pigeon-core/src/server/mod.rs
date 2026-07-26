@@ -1,5 +1,6 @@
 //! Core server logic: TCP accept loop + per-connection state machine.
 
+mod configuration_flow;
 mod connection;
 
 use anyhow::Result;

@@ -14,7 +14,7 @@
 use anyhow::{anyhow, Result};
 use pigeon_config::ServerConfig;
 use pigeon_protocol::codec::PacketCodec;
-use pigeon_protocol::java::{configuration, login, status, ProtocolState};
+use pigeon_protocol::java::{login, status, ProtocolState};
 use pigeon_protocol::ser::{PacketDecode, PacketEncode};
 use pigeon_protocol::{DecodedPacket, EncodedPacket};
 use std::net::SocketAddr;
@@ -107,36 +107,34 @@ impl Connection {
                     // need to flip compression on the codec mid-flow, so
                     // it gets its own async sub-handler that finishes
                     // when the client either transitions to Configuration
-                    // or disconnects.
-                    let next = handle_login(packet, &config, &mut framed, peer).await?;
+                    // or disconnects. It also returns the username so the
+                    // configuration/play phases can carry it forward.
+                    let (next, username) = handle_login(packet, &config, &mut framed, peer).await?;
                     state = next;
                     if state == ProtocolState::Configuration {
-                        // Fall through to the configuration loop when M5 lands;
-                        // for now we end the connection politely.
-                        tracing::info!(%peer, "login complete → configuration (M5 will continue)");
-                        // Send a brand CustomPayload so the client logs it
-                        // before we close, giving quick visual confirmation
-                        // when testing against a real Minecraft client.
-                        let brand = configuration::CustomPayload {
-                            channel: "minecraft:brand".to_string(),
-                            data: b"PigeonMC\0".to_vec(),
-                        };
-                        if let Ok(enc) = encode_packet(&brand, peer) {
-                            let _ = send_packet(&mut framed, enc, peer, state).await;
+                        // Drive the configuration handshake to completion.
+                        if let Err(err) = super::configuration_flow::handle_configuration(
+                            &mut framed,
+                            &config,
+                            peer,
+                            username,
+                        )
+                        .await
+                        {
+                            tracing::debug!(%peer, %err, "configuration handshake failed");
+                            return Err(err);
                         }
-                        // Then disconnect so the test client cleanly exits.
-                        let reason = configuration::Disconnect {
-                            reason_json: r#"{"text":"PigeonMC M4 reached configuration boundary"}"#
-                                .to_string(),
-                        };
-                        if let Ok(enc) = encode_packet(&reason, peer) {
-                            let _ = send_packet(&mut framed, enc, peer, state).await;
-                        }
+                        // Configuration succeeded — M5 (Play phase) is
+                        // a separate milestone; close the connection
+                        // cleanly for now.
+                        tracing::info!(%peer, "configuration complete (M7 boundary)");
                         return Ok(());
                     }
                 }
                 ProtocolState::Configuration => {
-                    tracing::debug!(%peer, "configuration loop not wired yet (M5)");
+                    // Reached only if a non-Login path somehow lands
+                    // here; treat as terminal until M5 wires Play.
+                    tracing::debug!(%peer, "unexpected configuration state after non-login path");
                     return Ok(());
                 }
                 ProtocolState::Play => {
@@ -198,13 +196,13 @@ async fn handle_login(
     config: &ServerConfig,
     framed: &mut Framed<TcpStream, PacketCodec>,
     peer: SocketAddr,
-) -> Result<ProtocolState> {
+) -> Result<(ProtocolState, String)> {
     // Step 1: must be a LoginStart.
     if first_packet.id != login::LoginStart::ID {
         tracing::debug!(%peer, id = first_packet.id, "expected login start");
         // Send a login disconnect and bail.
         let _ = send_login_disconnect(framed, peer, "Expected LoginStart.").await;
-        return Ok(ProtocolState::Login);
+        return Ok((ProtocolState::Login, String::new()));
     }
     let mut cursor = std::io::Cursor::new(first_packet.payload);
     let login_start = login::LoginStart::decode(&mut cursor).map_err(|e| anyhow!(e.to_string()))?;
@@ -226,7 +224,7 @@ async fn handle_login(
             "PigeonMC online-mode is not yet implemented. Set online_mode=false in your config.",
         )
         .await;
-        return Ok(ProtocolState::Login);
+        return Ok((ProtocolState::Login, String::new()));
     }
 
     // Step 2: optional SetCompression. We always emit it when the
@@ -240,6 +238,10 @@ async fn handle_login(
         send_packet(framed, enc, peer, ProtocolState::Login).await?;
         framed.codec_mut().set_compression(threshold);
     }
+
+    // Stash the username so we can thread it into the configuration
+    // and play phases.
+    let username = login_start.name.clone();
 
     // Step 3: LoginSuccess with the player's name + uuid (no Mojang
     // properties for offline mode).
@@ -266,13 +268,13 @@ async fn handle_login(
             }
             None => {
                 tracing::debug!(%peer, "client closed during login ack wait");
-                return Ok(ProtocolState::Login);
+                return Ok((ProtocolState::Login, String::new()));
             }
         };
         tracing::debug!(%peer, id = next.id, "post-login packet");
         if next.id == login::LoginAcknowledged::ID {
             tracing::info!(%peer, "login acknowledged — transition to configuration");
-            return Ok(ProtocolState::Configuration);
+            return Ok((ProtocolState::Configuration, username));
         }
         // Any other packet: log + keep waiting.
         tracing::debug!(%peer, id = next.id, "ignoring while awaiting LoginAcknowledged");

@@ -8,7 +8,10 @@ rust-version.workspace = true
 
 [dependencies]
 pigeon-config     = { workspace = true }
+pigeon-data        = { workspace = true }
 pigeon-protocol    = { workspace = true }
+pigeon-registry    = { workspace = true }
+pigeon-util        = { workspace = true }
 pigeon-text        = { workspace = true }
 tokio             = { workspace = true }
 tokio-util        = { workspace = true }
