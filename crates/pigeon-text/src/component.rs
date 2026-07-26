@@ -7,7 +7,7 @@ use serde_json::Value;
 /// We keep the model serializable as JSON for direct use in chat and
 /// server list responses, with one enum variant per component kind.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+#[serde(untagged)]
 pub enum Component {
     Text(TextComponent),
     Translatable(TranslatableComponent),

@@ -12,6 +12,7 @@ pigeon-protocol    = { workspace = true }
 pigeon-text        = { workspace = true }
 tokio             = { workspace = true }
 tokio-util        = { workspace = true }
+futures           = { workspace = true }
 tracing           = { workspace = true }
 tracing-subscriber = { workspace = true }
 anyhow            = { workspace = true }
