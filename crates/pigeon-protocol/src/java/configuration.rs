@@ -1180,4 +1180,182 @@ mod tests {
         assert_eq!(s, pkt.reason_json);
         assert!(reader.is_empty());
     }
+
+    #[test]
+    fn resource_pack_pop_no_uuid_is_flag_zero() {
+        let pkt = ResourcePackPop { uuid: None };
+        let mut buf = BytesMut::new();
+        PacketEncode::encode(&pkt, &mut buf).expect("encode must succeed");
+        assert_eq!(buf.as_ref(), &[0]);
+    }
+
+    #[test]
+    fn resource_pack_pop_some_uuid_is_flag_plus_uuid() {
+        let id = uuid::Uuid::nil();
+        let pkt = ResourcePackPop { uuid: Some(id) };
+        let mut buf = BytesMut::new();
+        PacketEncode::encode(&pkt, &mut buf).expect("encode must succeed");
+        assert_eq!(buf.as_ref()[0], 1);
+        assert_eq!(&buf.as_ref()[1..], id.as_bytes());
+    }
+
+    #[test]
+    fn transfer_encodes_host_and_port() {
+        let pkt = Transfer {
+            host: "play.example.com".to_string(),
+            port: 25565,
+        };
+        let mut buf = BytesMut::new();
+        PacketEncode::encode(&pkt, &mut buf).expect("encode must succeed");
+        let bytes = buf.freeze();
+        let mut reader = bytes.as_ref();
+        let host = crate::ser::read_string(&mut reader, 32767).expect("host");
+        let port = pigeon_codecs::read_var_int(&mut reader).expect("port");
+        assert_eq!(host, "play.example.com");
+        assert_eq!(port, 25565);
+        assert!(reader.is_empty());
+    }
+
+    #[test]
+    fn update_enabled_features_round_trip() {
+        let pkt = UpdateEnabledFeatures {
+            features: vec!["minecraft:vanilla".to_string()],
+        };
+        let mut buf = BytesMut::new();
+        PacketEncode::encode(&pkt, &mut buf).expect("encode must succeed");
+        let bytes = buf.freeze();
+        let mut reader = bytes.as_ref();
+        let count = pigeon_codecs::read_var_int(&mut reader).expect("count");
+        assert_eq!(count, 1);
+        let s = crate::ser::read_string(&mut reader, 32767).expect("feature");
+        assert_eq!(s, "minecraft:vanilla");
+        assert!(reader.is_empty());
+    }
+
+    #[test]
+    fn update_tags_round_trip() {
+        let pkt = UpdateTags {
+            registries: vec![TagRegistry {
+                registry: "minecraft:blocks".to_string(),
+                tags: vec![Tag {
+                    name: "minecraft:wool".to_string(),
+                    entries: vec![1, 2, 3],
+                }],
+            }],
+        };
+        let mut buf = BytesMut::new();
+        PacketEncode::encode(&pkt, &mut buf).expect("encode must succeed");
+        let bytes = buf.freeze();
+        let mut reader = bytes.as_ref();
+        let n_regs = pigeon_codecs::read_var_int(&mut reader).expect("registry count");
+        assert_eq!(n_regs, 1);
+        let reg_name = crate::ser::read_string(&mut reader, 32767).expect("reg name");
+        assert_eq!(reg_name, "minecraft:blocks");
+        let n_tags = pigeon_codecs::read_var_int(&mut reader).expect("tag count");
+        assert_eq!(n_tags, 1);
+        let tag_name = crate::ser::read_string(&mut reader, 32767).expect("tag name");
+        assert_eq!(tag_name, "minecraft:wool");
+        let n_entries = pigeon_codecs::read_var_int(&mut reader).expect("entry count");
+        assert_eq!(n_entries, 3);
+        let v1 = pigeon_codecs::read_var_int(&mut reader).unwrap();
+        let v2 = pigeon_codecs::read_var_int(&mut reader).unwrap();
+        let v3 = pigeon_codecs::read_var_int(&mut reader).unwrap();
+        assert_eq!((v1, v2, v3), (1, 2, 3));
+        assert!(reader.is_empty());
+    }
+
+    #[test]
+    fn select_known_packs_round_trip() {
+        let pkt = SelectKnownPacks {
+            packs: vec![KnownPack {
+                namespace: "minecraft".to_string(),
+                id: "core".to_string(),
+                version: "1.21.11".to_string(),
+            }],
+        };
+        let mut buf = BytesMut::new();
+        PacketEncode::encode(&pkt, &mut buf).expect("encode must succeed");
+        let bytes = buf.freeze();
+        let mut reader = bytes.as_ref();
+        let count = pigeon_codecs::read_var_int(&mut reader).expect("count");
+        assert_eq!(count, 1);
+        let ns = crate::ser::read_string(&mut reader, 32767).expect("ns");
+        let id = crate::ser::read_string(&mut reader, 32767).expect("id");
+        let ver = crate::ser::read_string(&mut reader, 32767).expect("ver");
+        assert_eq!(ns, "minecraft");
+        assert_eq!(id, "core");
+        assert_eq!(ver, "1.21.11");
+        assert!(reader.is_empty());
+    }
+
+    #[test]
+    fn custom_report_details_round_trip() {
+        let pkt = CustomReportDetails {
+            details: vec![CustomReportEntry {
+                key: "server".to_string(),
+                value: "pigeon".to_string(),
+            }],
+        };
+        let mut buf = BytesMut::new();
+        PacketEncode::encode(&pkt, &mut buf).expect("encode must succeed");
+        let bytes = buf.freeze();
+        let mut reader = bytes.as_ref();
+        let n = pigeon_codecs::read_var_int(&mut reader).expect("count");
+        assert_eq!(n, 1);
+        let k = crate::ser::read_string(&mut reader, 32767).expect("k");
+        let v = crate::ser::read_string(&mut reader, 32767).expect("v");
+        assert_eq!(k, "server");
+        assert_eq!(v, "pigeon");
+        assert!(reader.is_empty());
+    }
+
+    #[test]
+    fn code_of_conduct_encodes_string_body() {
+        let pkt = CodeOfConduct {
+            contents: "{\"text\":\"rules\"}".to_string(),
+        };
+        let mut buf = BytesMut::new();
+        PacketEncode::encode(&pkt, &mut buf).expect("encode must succeed");
+        let bytes = buf.freeze();
+        let mut reader = bytes.as_ref();
+        let s = crate::ser::read_string(&mut reader, 32767).expect("read");
+        assert_eq!(s, pkt.contents);
+        assert!(reader.is_empty());
+    }
+
+    #[test]
+    fn resource_pack_status_decodes_uuid_and_result() {
+        // Build the wire body: UUID(16 bytes) + VarInt(0=Accepted)
+        let id = uuid::Uuid::nil();
+        let mut wire = Vec::with_capacity(20);
+        wire.extend_from_slice(id.as_bytes());
+        pigeon_codecs::write_var_int(0, &mut wire).unwrap();
+        let pkt = decode_from_bytes::<ResourcePackStatus>(&wire).expect("decode");
+        assert_eq!(pkt.uuid, id);
+        assert_eq!(pkt.result, ResourcePackResult::Accepted);
+    }
+
+    #[test]
+    fn select_known_packs_ack_decode_round_trips() {
+        // Build the wire body: VarInt(1) + 3 strings
+        let mut wire = Vec::new();
+        pigeon_codecs::write_var_int(1, &mut wire).unwrap();
+        pigeon_codecs::write_var_int(9, &mut wire).unwrap();
+        wire.extend_from_slice(b"minecraft");
+        pigeon_codecs::write_var_int(4, &mut wire).unwrap();
+        wire.extend_from_slice(b"core");
+        pigeon_codecs::write_var_int(7, &mut wire).unwrap();
+        wire.extend_from_slice(b"1.21.11");
+        let decoded = decode_from_bytes::<SelectKnownPacksAck>(&wire).expect("decode");
+        assert_eq!(decoded.packs.len(), 1);
+        assert_eq!(decoded.packs[0].namespace, "minecraft");
+        assert_eq!(decoded.packs[0].id, "core");
+        assert_eq!(decoded.packs[0].version, "1.21.11");
+    }
+
+    #[test]
+    fn accept_code_of_conduct_decodes_empty_body() {
+        let pkt = decode_from_bytes::<AcceptCodeOfConduct>(&[]).expect("decode");
+        let _ = pkt;
+    }
 }
