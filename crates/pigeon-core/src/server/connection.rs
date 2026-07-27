@@ -117,28 +117,43 @@ impl Connection {
                             &mut framed,
                             &config,
                             peer,
-                            username,
+                            username.clone(),
                         )
                         .await
                         {
                             tracing::debug!(%peer, %err, "configuration handshake failed");
                             return Err(err);
                         }
-                        // Configuration succeeded — M5 (Play phase) is
-                        // a separate milestone; close the connection
-                        // cleanly for now.
-                        tracing::info!(%peer, "configuration complete (M7 boundary)");
+                        // Configuration succeeded — drive the play phase.
+                        let entity_id = next_entity_id();
+                        if let Err(err) = super::play_flow::handle_play(
+                            &mut framed,
+                            &config,
+                            peer,
+                            username.clone(),
+                            entity_id,
+                        )
+                        .await
+                        {
+                            tracing::debug!(%peer, %err, "play phase ended with err");
+                            return Err(err);
+                        }
+                        tracing::info!(%peer, "play phase complete");
                         return Ok(());
                     }
                 }
                 ProtocolState::Configuration => {
                     // Reached only if a non-Login path somehow lands
-                    // here; treat as terminal until M5 wires Play.
+                    // here; treat as terminal.
                     tracing::debug!(%peer, "unexpected configuration state after non-login path");
                     return Ok(());
                 }
                 ProtocolState::Play => {
-                    tracing::debug!(%peer, "play not wired yet (M6+)");
+                    // `handle_play` is invoked synchronously after the
+                    // configuration handshake from the Login branch, so
+                    // we never expect to dispatch an inbound packet
+                    // directly into Play here. If we do, log and close.
+                    tracing::debug!(%peer, "play packet reached outer dispatcher");
                     return Ok(());
                 }
             }
@@ -370,3 +385,12 @@ pub fn next_state_from(next: status::NextState) -> ProtocolState {
 /// same codec facade as the implementation evolves.
 #[allow(dead_code)]
 pub type WireConnection = Framed<TcpStream, PacketCodec>;
+
+/// Process-global allocator for the player entity ids passed to
+/// `LoginPlay`. A real player registry (M6) will own this, but the
+/// simple counter is enough to keep play-side semantics consistent.
+static NEXT_ENTITY_ID: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(1);
+
+fn next_entity_id() -> i32 {
+    NEXT_ENTITY_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}

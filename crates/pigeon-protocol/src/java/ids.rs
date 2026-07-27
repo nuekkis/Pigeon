@@ -121,6 +121,26 @@ pub mod configuration {
     pub const ACCEPT_CODE_OF_CONDUCT: &str = "minecraft:accept_code_of_conduct";
 }
 
+/// Canonical resource locations for the Java Play phase.
+///
+/// Only the packets required to drive the initial play handshake and
+/// keep the client alive are listed here; the full 139+66 packet
+/// surface ships as later milestones wire gameplay.
+pub mod play {
+    // --- Clientbound (S -> C) ---
+    /// S -> C, id 48 — `LoginPlay`: tells the client about the world
+    /// it has joined (dimension, gamemode, spawn point, …).
+    pub const LOGIN: &str = "minecraft:login";
+    /// S -> C, id 43 — server keep-alive ping.
+    pub const KEEP_ALIVE: &str = "minecraft:keep_alive";
+    /// S -> C, id 32 — disconnect from play state with a chat reason.
+    pub const DISCONNECT: &str = "minecraft:disconnect";
+
+    // --- Serverbound (C -> S) ---
+    /// C -> S, id 27 — client keep-alive pong.
+    pub const KEEP_ALIVE_SB: &str = "minecraft:keep_alive";
+}
+
 /// Resolve a clientbound packet id in the given phase.
 pub fn clientbound(phase: &str, packet: &str) -> i32 {
     pigeon_data::packets::clientbound_id(phase, packet)
@@ -274,5 +294,15 @@ mod tests {
             serverbound("configuration", configuration::ACCEPT_CODE_OF_CONDUCT),
             9
         );
+    }
+
+    #[test]
+    fn play_ids_match_data_report() {
+        // S -> C (clientbound)
+        assert_eq!(clientbound("play", play::LOGIN), 48);
+        assert_eq!(clientbound("play", play::KEEP_ALIVE), 43);
+        assert_eq!(clientbound("play", play::DISCONNECT), 32);
+        // C -> S (serverbound)
+        assert_eq!(serverbound("play", play::KEEP_ALIVE_SB), 27);
     }
 }

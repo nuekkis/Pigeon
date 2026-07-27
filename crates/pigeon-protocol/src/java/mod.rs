@@ -9,6 +9,7 @@ pub mod client;
 pub mod configuration;
 pub mod ids;
 pub mod login;
+pub mod play;
 pub mod server;
 pub mod state;
 pub mod status;

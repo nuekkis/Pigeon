@@ -2,6 +2,7 @@
 
 mod configuration_flow;
 mod connection;
+mod play_flow;
 
 use anyhow::Result;
 use pigeon_config::ServerConfig;
