@@ -1,19 +1,23 @@
-//! Server-wide player registry (M6).
+//! Server-wide player registry (M6+M6.5).
 //!
 //! Tracks every play-phase player: uuid, name, gamemode, latency,
 //! listed/tab-list visibility. The registry is `Arc<PlayerRegistry>`
 //! shared between the accept loop (per-connection tasks) and the
 //! status ping handler (so the `online` count reflects real players).
 //!
-//! M6 only wires the data side + `PlayerInfoUpdate`/`PlayerInfoRemove`
-//! packet construction helpers; pushing those updates to every other
-//! player (broadcast) ships in M6.5 alongside the chunk-streaming
-//! broadcast fan-out.
+//! M6 wires the data side and admits/removes a player from the count.
+//! M6.5 adds an outbound broadcast bus: each admitted player owns an
+//! `mpsc::Sender<EncodedPacket>`; when a new player joins, the
+//! registry broadcasts the joiner's `PlayerInfoUpdate` to every other
+//! online player and (separately) hands the joiner a snapshot of the
+//! currently-online player list so the joiner's tab list is correct.
 
 use std::collections::HashMap;
 use std::sync::Arc;
 
 use parking_lot::Mutex;
+use pigeon_protocol::EncodedPacket;
+use tokio::sync::mpsc;
 use uuid::Uuid;
 
 /// Default gamemode the server assigns on Play entry. 1 = survival.
@@ -51,6 +55,11 @@ impl PlayerRecord {
 #[derive(Debug, Default)]
 pub struct PlayerRegistry {
     players: HashMap<Uuid, PlayerRecord>,
+    /// Per-player outbound mpsc sender. Each connection's [`handle_play`]
+    /// task owns the matching `mpsc::Receiver` and forwards anything
+    /// pushed here to its framed socket — so a broadcast is a single
+    /// `try_send` per peer.
+    senders: HashMap<Uuid, mpsc::Sender<EncodedPacket>>,
 }
 
 impl PlayerRegistry {
@@ -65,6 +74,7 @@ impl PlayerRegistry {
     }
 
     pub fn remove(&mut self, uuid: &Uuid) -> Option<PlayerRecord> {
+        self.senders.remove(uuid);
         self.players.remove(uuid)
     }
 
@@ -91,6 +101,56 @@ impl PlayerRegistry {
         let prev = record.latency;
         record.latency = latency;
         Some(prev)
+    }
+
+    /// Register an outbound mpsc channel for a freshly admitted player.
+    /// Future [`broadcast`] / [`send_to`] calls pushed onto this
+    /// registry will route through this sender. Returns the matching
+    /// receiver the caller owns for the player's connection task.
+    pub fn attach_channel(&mut self, uuid: Uuid, capacity: usize) -> mpsc::Receiver<EncodedPacket> {
+        let (tx, rx) = mpsc::channel(capacity);
+        self.senders.insert(uuid, tx);
+        rx
+    }
+
+    /// Send a single packet to one specific online player. Returns
+    /// `Err` if the channel is closed (player departed between the
+    /// snapshot and the send).
+    pub fn send_to(&self, uuid: &Uuid, packet: EncodedPacket) -> Result<(), EncodedPacket> {
+        match self.senders.get(uuid) {
+            Some(tx) => match tx.try_send(packet) {
+                Ok(()) => Ok(()),
+                Err(mpsc::error::TrySendError::Full(p)) => Err(p),
+                Err(mpsc::error::TrySendError::Closed(p)) => Err(p),
+            },
+            None => Err(packet),
+        }
+    }
+
+    /// Broadcast a single packet to every online player **except** the
+    /// one identified by `skip`. Packets that fail to enqueue (full /
+    /// closed) are logged at debug level and dropped — a slow or
+    /// recently-departed peer must never block the broadcast fan-out.
+    pub fn broadcast_except(&self, skip: &Uuid, packet: &EncodedPacket) {
+        for (uuid, tx) in &self.senders {
+            if uuid == skip {
+                continue;
+            }
+            if let Err(err) = tx.try_send(packet.clone()) {
+                tracing::debug!(%uuid, %err, "broadcast drop");
+            }
+        }
+    }
+
+    /// Snapshot of every online player's record **excluding** the one
+    /// identified by `skip` — used to build the joiner's initial tab
+    /// list when it enters play.
+    pub fn others(&self, skip: &Uuid) -> Vec<PlayerRecord> {
+        self.players
+            .values()
+            .filter(|r| r.uuid != *skip)
+            .cloned()
+            .collect()
     }
 }
 
@@ -126,7 +186,8 @@ impl PlayerRegistryHandle {
         record
     }
 
-    /// Convenience: remove a parting player.
+    /// Convenience: remove a parting player. Also drops the cached
+    /// outbound sender so subsequent broadcasts skip them.
     pub fn depart(&self, uuid: &Uuid) -> Option<PlayerRecord> {
         self.with_lock(|r| r.remove(uuid))
     }
@@ -134,6 +195,32 @@ impl PlayerRegistryHandle {
     /// Convenience: current online count.
     pub fn online(&self) -> usize {
         self.read(|r| r.len())
+    }
+
+    /// M6.5: attach an outbound channel to an already-admitted player,
+    /// broadcast the joiner's encoded `PlayerInfoUpdate` packet to every
+    /// other online peer, and return the joiner's `mpsc::Receiver`
+    /// paired with a `Vec<PlayerRecord>` snapshot of every other online
+    /// player so the caller can build a single `PlayerInfoUpdate`
+    /// describing everyone currently online.
+    ///
+    /// The caller is expected to have called [`admit`] earlier (during
+    /// login) so the registry already has the `PlayerRecord`.
+    pub fn attach_and_snapshot(
+        &self,
+        uuid: Uuid,
+        joiner_packet: EncodedPacket,
+    ) -> (mpsc::Receiver<EncodedPacket>, Vec<PlayerRecord>) {
+        let mut snapshot = Vec::new();
+        let rx = self.with_lock(|r| {
+            snapshot = r.others(&uuid);
+            r.broadcast_except(&uuid, &joiner_packet);
+            // Attach the joiner's outbound channel — done last so the
+            // broadcast above did not loop back into the joiner's own
+            // receiver.
+            r.attach_channel(uuid, 64)
+        });
+        (rx, snapshot)
     }
 }
 

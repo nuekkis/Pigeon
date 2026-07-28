@@ -135,6 +135,7 @@ impl Connection {
                             &mut framed,
                             &config,
                             peer,
+                            &players,
                             record.username,
                             entity_id,
                             player_uuid,
