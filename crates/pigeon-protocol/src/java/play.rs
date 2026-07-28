@@ -204,6 +204,254 @@ impl PacketEncode for KeepAliveAck {
 }
 
 // ===========================================================================
+// Clientbound (S → C) — Player Info (1.21.x)
+// ===========================================================================
+
+/// Bitmask actions packed into the `PlayerInfoUpdate` header.
+///
+/// Mojang order — actions are emitted in this exact ascending bit order:
+///   bit 0 — ADD_PLAYER         (name + properties)
+///   bit 1 — INITIALIZE_CHAT    (session signature)
+///   bit 2 — UPDATE_GAMEMODE
+///   bit 3 — UPDATE_LISTED
+///   bit 4 — UPDATE_LATENCY
+///   bit 5 — UPDATE_DISPLAY_NAME
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PlayerInfoActions(pub u8);
+
+impl PlayerInfoActions {
+    pub const ADD_PLAYER: u8 = 1 << 0;
+    pub const INITIALIZE_CHAT: u8 = 1 << 1;
+    pub const UPDATE_GAMEMODE: u8 = 1 << 2;
+    pub const UPDATE_LISTED: u8 = 1 << 3;
+    pub const UPDATE_LATENCY: u8 = 1 << 4;
+    pub const UPDATE_DISPLAY_NAME: u8 = 1 << 5;
+
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub const fn with(mut self, flag: u8) -> Self {
+        self.0 |= flag;
+        self
+    }
+}
+
+/// Per-player entry payload for [`PlayerInfoUpdate`]. Each `Option<_>`
+/// is read/written only if the matching action bit is set.
+#[derive(Debug, Clone)]
+pub struct PlayerInfoEntry {
+    /// The player's uuid (16 raw bytes).
+    pub uuid: uuid::Uuid,
+    /// ADD_PLAYER data.
+    pub name: Option<String>,
+    /// INITIALIZE_CHAT data — when `Some(false)` indicates the player
+    /// has no chat session; when `Some(true)` the inner value carries
+    /// the (yet-unimplemented) session signature. We currently only
+    /// ship the no-signature case.
+    pub has_chat_session: Option<bool>,
+    /// UPDATE_GAMEMODE data (0 = survival, 1 = creative, …).
+    pub gamemode: Option<i32>,
+    /// UPDATE_LISTED data (tab-list visibility).
+    pub listed: Option<bool>,
+    /// UPDATE_LATENCY data (milliseconds, -1 = unknown).
+    pub latency: Option<i32>,
+    /// UPDATE_DISPLAY_NAME data (`true` followed by an NBT component).
+    /// The component body itself is *not* emitted by this struct yet —
+    /// when present it will be `Some(true)` for stubbing purposes.
+    pub has_display_name: Option<bool>,
+}
+
+/// `ClientboundPlayerInfoUpdatePacket` (id 68) — push per-player
+/// updates to the tab list. The 1.21.x wire layout is:
+///
+///   VarInt(actions mask) | VarInt(player count) |
+///     for each player:
+///       UUID (16 bytes) + per-action payload
+///
+/// where the per-action payload is included iff its action bit is set.
+#[derive(Debug, Clone)]
+pub struct PlayerInfoUpdate {
+    pub actions: PlayerInfoActions,
+    pub entries: Vec<PlayerInfoEntry>,
+}
+
+impl PacketEncode for PlayerInfoUpdate {
+    const ID: i32 = 0x44; // 68
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
+        pigeon_codecs::write_var_int(self.actions.0 as i32, buf)?;
+        pigeon_codecs::write_var_int(self.entries.len() as i32, buf)?;
+        for entry in &self.entries {
+            // UUID — 16 raw bytes.
+            buf.put_slice(entry.uuid.as_bytes());
+
+            if self.actions.0 & PlayerInfoActions::ADD_PLAYER != 0 {
+                let name = entry.name.as_ref().ok_or(PacketSerError::InvalidValue)?;
+                crate::ser::write_string(name, buf, 16)?;
+                // Properties (PropertyArray) — minimal: 0 entries.
+                pigeon_codecs::write_var_int(0, buf)?;
+            }
+            if self.actions.0 & PlayerInfoActions::INITIALIZE_CHAT != 0 {
+                // bool has_signature(false) — no chat session data emitted.
+                buf.put_u8(u8::from(entry.has_chat_session.unwrap_or(false)));
+            }
+            if self.actions.0 & PlayerInfoActions::UPDATE_GAMEMODE != 0 {
+                let gm = entry.gamemode.unwrap_or(0);
+                pigeon_codecs::write_var_int(gm, buf)?;
+            }
+            if self.actions.0 & PlayerInfoActions::UPDATE_LISTED != 0 {
+                buf.put_u8(u8::from(entry.listed.unwrap_or(false)));
+            }
+            if self.actions.0 & PlayerInfoActions::UPDATE_LATENCY != 0 {
+                pigeon_codecs::write_var_int(entry.latency.unwrap_or(-1), buf)?;
+            }
+            if self.actions.0 & PlayerInfoActions::UPDATE_DISPLAY_NAME != 0 {
+                buf.put_u8(u8::from(entry.has_display_name.unwrap_or(false)));
+            }
+        }
+        Ok(())
+    }
+}
+
+/// `ClientboundPlayerInfoRemovePacket` (id 67) — remove the listed
+/// players by uuid.
+///
+/// Wire layout: `VarInt(count) | UUID(16 bytes) * count`.
+#[derive(Debug, Clone)]
+pub struct PlayerInfoRemove {
+    pub uuids: Vec<uuid::Uuid>,
+}
+
+impl PacketEncode for PlayerInfoRemove {
+    const ID: i32 = 0x43; // 67
+
+    fn encode<B: BufMut>(&self, buf: &mut B) -> Result<(), PacketSerError> {
+        pigeon_codecs::write_var_int(self.uuids.len() as i32, buf)?;
+        for uuid in &self.uuids {
+            buf.put_slice(uuid.as_bytes());
+        }
+        Ok(())
+    }
+}
+
+/// Resolve the wire id of the `PlayerInfoUpdate` packet from `packets.json`.
+pub fn player_info_update_id() -> i32 {
+    ids::clientbound("play", ids::play::PLAYER_INFO_UPDATE)
+}
+
+/// Resolve the wire id of the `PlayerInfoRemove` packet from `packets.json`.
+pub fn player_info_remove_id() -> i32 {
+    ids::clientbound("play", ids::play::PLAYER_INFO_REMOVE)
+}
+
+// ===========================================================================
+// Serverbound (C → S) — Movement (1.21.x minimal subset)
+// ===========================================================================
+
+/// Common fields for the four `move_player_*` packets. The flag bits
+/// distinguish the variants on the wire (only changed fields are sent).
+#[derive(Debug, Clone, PartialEq)]
+pub struct MovePlayer {
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub on_ground: bool,
+}
+
+/// `ServerboundMovePlayerPosPacket` (id 29) — position changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MovePlayerPos(pub MovePlayer);
+
+impl PacketDecode for MovePlayerPos {
+    const ID: i32 = 0x1D; // 29
+
+    fn decode<B: Buf>(buf: &mut B) -> Result<Self, PacketSerError> {
+        let x = buf.get_f64();
+        let y = buf.get_f64();
+        let z = buf.get_f64();
+        let on_ground = buf.get_u8() != 0;
+        Ok(Self(MovePlayer {
+            x,
+            y,
+            z,
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground,
+        }))
+    }
+}
+
+/// `ServerboundMovePlayerPosRotPacket` (id 30) — position + rotation changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MovePlayerPosRot(pub MovePlayer);
+
+impl PacketDecode for MovePlayerPosRot {
+    const ID: i32 = 0x1E; // 30
+
+    fn decode<B: Buf>(buf: &mut B) -> Result<Self, PacketSerError> {
+        let x = buf.get_f64();
+        let y = buf.get_f64();
+        let z = buf.get_f64();
+        let yaw = buf.get_f32();
+        let pitch = buf.get_f32();
+        let on_ground = buf.get_u8() != 0;
+        Ok(Self(MovePlayer {
+            x,
+            y,
+            z,
+            yaw,
+            pitch,
+            on_ground,
+        }))
+    }
+}
+
+/// `ServerboundMovePlayerRotPacket` (id 31) — rotation changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MovePlayerRot(pub MovePlayer);
+
+impl PacketDecode for MovePlayerRot {
+    const ID: i32 = 0x1F; // 31
+
+    fn decode<B: Buf>(buf: &mut B) -> Result<Self, PacketSerError> {
+        let yaw = buf.get_f32();
+        let pitch = buf.get_f32();
+        let on_ground = buf.get_u8() != 0;
+        Ok(Self(MovePlayer {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            yaw,
+            pitch,
+            on_ground,
+        }))
+    }
+}
+
+/// `ServerboundMovePlayerStatusOnlyPacket` (id 32) — only on_ground flag changed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MovePlayerStatusOnly(pub MovePlayer);
+
+impl PacketDecode for MovePlayerStatusOnly {
+    const ID: i32 = 0x20; // 32
+
+    fn decode<B: Buf>(buf: &mut B) -> Result<Self, PacketSerError> {
+        let on_ground = buf.get_u8() != 0;
+        Ok(Self(MovePlayer {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            yaw: 0.0,
+            pitch: 0.0,
+            on_ground,
+        }))
+    }
+}
+
+// ===========================================================================
 // Helpers
 // ===========================================================================
 
@@ -404,5 +652,101 @@ mod tests {
         // Sanity: at least the scalar prefix should be present.
         // VarInt(42) + u8(0) + VarInt(1) + i8(-1) + VarInt(3) + ...
         assert!(buf.len() > 20);
+    }
+
+    #[test]
+    fn player_info_update_encodes_add_listed() {
+        let uuid = uuid::Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef);
+        let pkt = PlayerInfoUpdate {
+            actions: PlayerInfoActions::empty()
+                .with(PlayerInfoActions::ADD_PLAYER)
+                .with(PlayerInfoActions::UPDATE_GAMEMODE)
+                .with(PlayerInfoActions::UPDATE_LISTED),
+            entries: vec![PlayerInfoEntry {
+                uuid,
+                name: Some("PigeonTest".to_string()),
+                has_chat_session: None,
+                gamemode: Some(1),
+                listed: Some(true),
+                latency: None,
+                has_display_name: None,
+            }],
+        };
+
+        let mut buf = bytes::BytesMut::new();
+        let result = pkt.encode(&mut buf);
+        assert!(result.is_ok(), "encode failed: {:?}", result);
+        let bytes = buf.freeze();
+
+        // Layout:
+        //   VarInt(actions=0b001_0101=21) | VarInt(1)=1 | UUID(16) |
+        //   [ADD_PLAYER] VarStr(10)="PigeonTest" + VarInt(0) |
+        //   [UPDATE_GAMEMODE] VarInt(1) |
+        //   [UPDATE_LISTED] u8(1)
+        // ~ 1+1+16+1+1+10+1+1+1+1 = ~34
+        assert!(bytes.len() >= 30, "buf too short: {}", bytes.len());
+
+        // Sanity-check the first byte (action mask VarInt = 13).
+        // bits: ADD_PLAYER(1) + UPDATE_GAMEMODE(4) + UPDATE_LISTED(8) = 13.
+        assert_eq!(bytes[0], 13);
+    }
+
+    #[test]
+    fn player_info_remove_encodes_uuids() {
+        let pkt = PlayerInfoRemove {
+            uuids: vec![
+                uuid::Uuid::from_u128(0x0123_4567_89ab_cdef_0123_4567_89ab_cdef),
+                uuid::Uuid::from_u128(0x1111_1111_2222_3333_4444_5555_6666_7777),
+            ],
+        };
+
+        let mut buf = bytes::BytesMut::new();
+        let result = pkt.encode(&mut buf);
+        assert!(result.is_ok(), "encode failed: {:?}", result);
+        let bytes = buf.freeze();
+
+        // Layout: VarInt(2) + 16 + 16 = 33 bytes.
+        assert_eq!(bytes[0], 2);
+        assert_eq!(bytes.len(), 33);
+    }
+
+    #[test]
+    fn move_player_pos_decode_roundtrip() {
+        let mut raw = bytes::BytesMut::with_capacity(25);
+        raw.put_f64(1.5);
+        raw.put_f64(2.5);
+        raw.put_f64(3.5);
+        raw.put_u8(1);
+        let mut cursor = std::io::Cursor::new(raw.freeze());
+        let pkt = MovePlayerPos::decode(&mut cursor).unwrap();
+        assert!(pkt.0.on_ground);
+        assert!((pkt.0.x - 1.5).abs() < 1e-9);
+        assert!((pkt.0.y - 2.5).abs() < 1e-9);
+        assert!((pkt.0.z - 3.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn move_player_pos_rot_decode_roundtrip() {
+        let mut raw = bytes::BytesMut::with_capacity(33);
+        raw.put_f64(10.0);
+        raw.put_f64(20.0);
+        raw.put_f64(30.0);
+        raw.put_f32(45.0);
+        raw.put_f32(-30.0);
+        raw.put_u8(0);
+        let mut cursor = std::io::Cursor::new(raw.freeze());
+        let pkt = MovePlayerPosRot::decode(&mut cursor).unwrap();
+        assert!(!pkt.0.on_ground);
+        assert!((pkt.0.yaw - 45.0).abs() < 1e-5);
+        assert!((pkt.0.pitch + 30.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn move_player_status_only_decode() {
+        let mut raw = bytes::BytesMut::with_capacity(1);
+        raw.put_u8(1);
+        let mut cursor = std::io::Cursor::new(raw.freeze());
+        let pkt = MovePlayerStatusOnly::decode(&mut cursor).unwrap();
+        assert!(pkt.0.on_ground);
     }
 }

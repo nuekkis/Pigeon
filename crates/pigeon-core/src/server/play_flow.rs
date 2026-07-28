@@ -47,6 +47,7 @@ pub async fn handle_play(
     peer: SocketAddr,
     username: String,
     entity_id: i32,
+    player_uuid: uuid::Uuid,
 ) -> Result<()> {
     tracing::info!(%peer, username = %username, "play phase begin");
 
@@ -59,6 +60,26 @@ pub async fn handle_play(
     // 1. S → C: LoginPlay with a hardcoded minimal overworld layout.
     let login = build_login_play(config, entity_id);
     write_packet(framed, &login, peer).await?;
+
+    // 1b. S → C: PlayerInfoUpdate — admit the joining player to the
+    //     tab list. M6 wires the broadcast to *other* players; here we
+    //     only inform the joiner so it sees itself listed.
+    let player_info = play::PlayerInfoUpdate {
+        actions: play::PlayerInfoActions::empty()
+            .with(play::PlayerInfoActions::ADD_PLAYER)
+            .with(play::PlayerInfoActions::UPDATE_GAMEMODE)
+            .with(play::PlayerInfoActions::UPDATE_LISTED),
+        entries: vec![play::PlayerInfoEntry {
+            uuid: player_uuid,
+            name: Some(username.clone()),
+            has_chat_session: None,
+            gamemode: Some(1),
+            listed: Some(true),
+            latency: None,
+            has_display_name: None,
+        }],
+    };
+    write_packet(framed, &player_info, peer).await?;
 
     // 2. Periodic keep-alive loop. We tolerate any inbound packet here
     //    ("movement"), only acting on `KeepAliveAck` and silently

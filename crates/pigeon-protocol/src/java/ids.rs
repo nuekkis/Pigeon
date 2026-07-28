@@ -135,10 +135,22 @@ pub mod play {
     pub const KEEP_ALIVE: &str = "minecraft:keep_alive";
     /// S -> C, id 32 — disconnect from play state with a chat reason.
     pub const DISCONNECT: &str = "minecraft:disconnect";
+    /// S -> C, id 67 — remove the listed players by uuid.
+    pub const PLAYER_INFO_REMOVE: &str = "minecraft:player_info_remove";
+    /// S -> C, id 68 — push per-player updates (add/listed/gamemode/latency/display).
+    pub const PLAYER_INFO_UPDATE: &str = "minecraft:player_info_update";
 
     // --- Serverbound (C -> S) ---
     /// C -> S, id 27 — client keep-alive pong.
     pub const KEEP_ALIVE_SB: &str = "minecraft:keep_alive";
+    /// C -> S, id 29 — `ServerboundMovePlayerPosPacket`.
+    pub const MOVE_PLAYER_POS: &str = "minecraft:move_player_pos";
+    /// C -> S, id 30 — `ServerboundMovePlayerPosRotPacket`.
+    pub const MOVE_PLAYER_POS_ROT: &str = "minecraft:move_player_pos_rot";
+    /// C -> S, id 31 — `ServerboundMovePlayerRotPacket`.
+    pub const MOVE_PLAYER_ROT: &str = "minecraft:move_player_rot";
+    /// C -> S, id 32 — `ServerboundMovePlayerStatusOnlyPacket` (on-ground).
+    pub const MOVE_PLAYER_STATUS_ONLY: &str = "minecraft:move_player_status_only";
 }
 
 /// Resolve a clientbound packet id in the given phase.
@@ -302,7 +314,13 @@ mod tests {
         assert_eq!(clientbound("play", play::LOGIN), 48);
         assert_eq!(clientbound("play", play::KEEP_ALIVE), 43);
         assert_eq!(clientbound("play", play::DISCONNECT), 32);
+        assert_eq!(clientbound("play", play::PLAYER_INFO_REMOVE), 67);
+        assert_eq!(clientbound("play", play::PLAYER_INFO_UPDATE), 68);
         // C -> S (serverbound)
         assert_eq!(serverbound("play", play::KEEP_ALIVE_SB), 27);
+        assert_eq!(serverbound("play", play::MOVE_PLAYER_POS), 29);
+        assert_eq!(serverbound("play", play::MOVE_PLAYER_POS_ROT), 30);
+        assert_eq!(serverbound("play", play::MOVE_PLAYER_ROT), 31);
+        assert_eq!(serverbound("play", play::MOVE_PLAYER_STATUS_ONLY), 32);
     }
 }

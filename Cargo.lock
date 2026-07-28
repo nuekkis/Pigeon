@@ -631,6 +631,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "futures",
+ "parking_lot",
  "pigeon-config",
  "pigeon-data",
  "pigeon-protocol",

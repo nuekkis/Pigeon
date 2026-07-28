@@ -3,6 +3,7 @@
 mod configuration_flow;
 mod connection;
 mod play_flow;
+mod player_registry;
 
 use anyhow::Result;
 use pigeon_config::ServerConfig;
@@ -11,11 +12,15 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 pub use connection::Connection;
+pub use player_registry::{PlayerRecord, PlayerRegistry, PlayerRegistryHandle};
 
 /// Top-level server handle.
 pub struct Server {
     config: Arc<ServerConfig>,
     listener: TcpListener,
+    /// Shared across every connection task so the status-ping handler
+    /// can read the live online-player count.
+    players: PlayerRegistryHandle,
 }
 
 impl Server {
@@ -25,11 +30,16 @@ impl Server {
             format!("{}:{}", config.network.bind_address, config.network.port).parse()?;
         tracing::info!(%addr, "starting Pigeon server");
         let listener = TcpListener::bind(addr).await?;
-        Ok(Self { config, listener })
+        Ok(Self {
+            config,
+            listener,
+            players: PlayerRegistryHandle::new(),
+        })
     }
 
     pub async fn run(self) -> Result<()> {
         let config = self.config.clone();
+        let players = self.players.clone();
         loop {
             let (stream, peer) = match self.listener.accept().await {
                 Ok(pair) => pair,
@@ -40,8 +50,9 @@ impl Server {
             };
             tracing::debug!(%peer, "incoming connection");
             let cfg = config.clone();
+            let players = players.clone();
             tokio::spawn(async move {
-                if let Err(err) = Connection::handle(stream, cfg, peer).await {
+                if let Err(err) = Connection::handle(stream, cfg, peer, players).await {
                     tracing::debug!(%peer, %err, "connection closed");
                 }
             });

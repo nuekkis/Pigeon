@@ -31,10 +31,6 @@ use futures::StreamExt;
 /// for the live `packets.json` lands.
 const PROTOCOL_VERSION_1_21_11: i32 = 0;
 
-/// Players reported in the status ping. M3 reports `0/0`; the real
-/// count is wired in M6 alongside the player registry.
-const STATUS_PLAYERS_ONLINE: u32 = 0;
-
 /// Drop-in helper to push an `EncodedPacket` built from an `id` + raw
 /// body through the framed stream, returning any send error.
 async fn send_packet(
@@ -67,6 +63,7 @@ impl Connection {
         stream: TcpStream,
         config: Arc<ServerConfig>,
         peer: SocketAddr,
+        players: super::player_registry::PlayerRegistryHandle,
     ) -> Result<()> {
         tracing::info!(%peer, "incoming connection");
 
@@ -98,7 +95,8 @@ impl Connection {
                     handle_handshake(packet, &mut state)?;
                 }
                 ProtocolState::Status => {
-                    if let Some(encoded) = handle_status(packet, &config)? {
+                    let online = players.online() as u32;
+                    if let Some(encoded) = handle_status(packet, &config, online)? {
                         send_packet(&mut framed, encoded, peer, state).await?;
                     }
                 }
@@ -109,7 +107,8 @@ impl Connection {
                     // when the client either transitions to Configuration
                     // or disconnects. It also returns the username so the
                     // configuration/play phases can carry it forward.
-                    let (next, username) = handle_login(packet, &config, &mut framed, peer).await?;
+                    let (next, record) =
+                        handle_login(packet, &config, &mut framed, peer, &players).await?;
                     state = next;
                     if state == ProtocolState::Configuration {
                         // Drive the configuration handshake to completion.
@@ -117,7 +116,10 @@ impl Connection {
                             &mut framed,
                             &config,
                             peer,
-                            username.clone(),
+                            record
+                                .as_ref()
+                                .map(|r| r.username.clone())
+                                .unwrap_or_default(),
                         )
                         .await
                         {
@@ -125,20 +127,27 @@ impl Connection {
                             return Err(err);
                         }
                         // Configuration succeeded — drive the play phase.
-                        let entity_id = next_entity_id();
+                        let record =
+                            record.expect("configuration path requires an admitted player record");
+                        let entity_id = record.entity_id;
+                        let player_uuid = record.uuid;
                         if let Err(err) = super::play_flow::handle_play(
                             &mut framed,
                             &config,
                             peer,
-                            username.clone(),
+                            record.username,
                             entity_id,
+                            player_uuid,
                         )
                         .await
                         {
                             tracing::debug!(%peer, %err, "play phase ended with err");
+                            // Player departed — remove from registry.
+                            players.depart(&player_uuid);
                             return Err(err);
                         }
                         tracing::info!(%peer, "play phase complete");
+                        players.depart(&player_uuid);
                         return Ok(());
                     }
                 }
@@ -190,8 +199,12 @@ fn handle_handshake(packet: DecodedPacket, state: &mut ProtocolState) -> Result<
 }
 
 /// Handle the two-packet Status phase: StatusRequest then PingRequest.
-fn handle_status(packet: DecodedPacket, config: &ServerConfig) -> Result<Option<EncodedPacket>> {
-    route_status(packet, config, STATUS_PLAYERS_ONLINE)
+fn handle_status(
+    packet: DecodedPacket,
+    config: &ServerConfig,
+    players_online: u32,
+) -> Result<Option<EncodedPacket>> {
+    route_status(packet, config, players_online)
 }
 
 /// Login-phase driver. Handles the offline (online-mode=false) flow:
@@ -211,13 +224,14 @@ async fn handle_login(
     config: &ServerConfig,
     framed: &mut Framed<TcpStream, PacketCodec>,
     peer: SocketAddr,
-) -> Result<(ProtocolState, String)> {
+    players: &super::player_registry::PlayerRegistryHandle,
+) -> Result<(ProtocolState, Option<super::player_registry::PlayerRecord>)> {
     // Step 1: must be a LoginStart.
     if first_packet.id != login::LoginStart::ID {
         tracing::debug!(%peer, id = first_packet.id, "expected login start");
         // Send a login disconnect and bail.
         let _ = send_login_disconnect(framed, peer, "Expected LoginStart.").await;
-        return Ok((ProtocolState::Login, String::new()));
+        return Ok((ProtocolState::Login, None));
     }
     let mut cursor = std::io::Cursor::new(first_packet.payload);
     let login_start = login::LoginStart::decode(&mut cursor).map_err(|e| anyhow!(e.to_string()))?;
@@ -239,7 +253,7 @@ async fn handle_login(
             "PigeonMC online-mode is not yet implemented. Set online_mode=false in your config.",
         )
         .await;
-        return Ok((ProtocolState::Login, String::new()));
+        return Ok((ProtocolState::Login, None));
     }
 
     // Step 2: optional SetCompression. We always emit it when the
@@ -253,10 +267,6 @@ async fn handle_login(
         send_packet(framed, enc, peer, ProtocolState::Login).await?;
         framed.codec_mut().set_compression(threshold);
     }
-
-    // Stash the username so we can thread it into the configuration
-    // and play phases.
-    let username = login_start.name.clone();
 
     // Step 3: LoginSuccess with the player's name + uuid (no Mojang
     // properties for offline mode).
@@ -283,13 +293,18 @@ async fn handle_login(
             }
             None => {
                 tracing::debug!(%peer, "client closed during login ack wait");
-                return Ok((ProtocolState::Login, String::new()));
+                return Ok((ProtocolState::Login, None));
             }
         };
         tracing::debug!(%peer, id = next.id, "post-login packet");
         if next.id == login::LoginAcknowledged::ID {
             tracing::info!(%peer, "login acknowledged — transition to configuration");
-            return Ok((ProtocolState::Configuration, username));
+            // Admit the player to the registry; the returned record
+            // carries the assigned entity_id + default gamemode.
+            let entity_id = next_entity_id();
+            let record = players.admit(login_start.uuid, login_start.name, entity_id);
+            tracing::info!(%peer, uuid = %record.uuid, entity_id, "player admitted to registry");
+            return Ok((ProtocolState::Configuration, Some(record)));
         }
         // Any other packet: log + keep waiting.
         tracing::debug!(%peer, id = next.id, "ignoring while awaiting LoginAcknowledged");
