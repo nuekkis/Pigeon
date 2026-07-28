@@ -14,7 +14,7 @@
 use anyhow::{anyhow, Result};
 use pigeon_config::ServerConfig;
 use pigeon_protocol::codec::PacketCodec;
-use pigeon_protocol::java::{login, status, ProtocolState};
+use pigeon_protocol::java::{login, play, status, ProtocolState};
 use pigeon_protocol::ser::{PacketDecode, PacketEncode};
 use pigeon_protocol::{DecodedPacket, EncodedPacket};
 use std::net::SocketAddr;
@@ -143,12 +143,24 @@ impl Connection {
                         .await
                         {
                             tracing::debug!(%peer, %err, "play phase ended with err");
-                            // Player departed — remove from registry.
-                            players.depart(&player_uuid);
+                            // Player departed — remove from registry and
+                            // broadcast PlayerInfoRemove to remaining peers
+                            // so their tab lists drop this player.
+                            let remove_pkt = play::PlayerInfoRemove {
+                                uuids: vec![player_uuid],
+                            };
+                            let remove_enc = encode_packet(&remove_pkt, peer)?;
+                            players.depart_and_broadcast(&player_uuid, remove_enc);
                             return Err(err);
                         }
                         tracing::info!(%peer, "play phase complete");
-                        players.depart(&player_uuid);
+                        // Player left cleanly — broadcast PlayerInfoRemove
+                        // to remaining peers so their tab lists drop them.
+                        let remove_pkt = play::PlayerInfoRemove {
+                            uuids: vec![player_uuid],
+                        };
+                        let remove_enc = encode_packet(&remove_pkt, peer)?;
+                        players.depart_and_broadcast(&player_uuid, remove_enc);
                         return Ok(());
                     }
                 }

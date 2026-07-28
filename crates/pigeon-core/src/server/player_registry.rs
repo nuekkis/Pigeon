@@ -222,6 +222,28 @@ impl PlayerRegistryHandle {
         });
         (rx, snapshot)
     }
+
+    /// M6.5: remove a parting player from the registry **and** broadcast
+    /// the supplied `PlayerInfoRemove` packet to every still-online peer.
+    /// The channel for the parting player is dropped atomically so no
+    /// later broadcast reaches them. Returns the removed record if the
+    /// player was actually registered.
+    pub fn depart_and_broadcast(
+        &self,
+        uuid: &Uuid,
+        remove_packet: EncodedPacket,
+    ) -> Option<PlayerRecord> {
+        self.with_lock(|r| {
+            let removed = r.remove(uuid);
+            // `broadcast_except` would skip the departing peer (using
+            // the uuid filter) — but `remove` already dropped their
+            // sender from the map. Either way, broadcasting to
+            // *everyone current* is exactly what we want here; there's
+            // no risk of looping back into the departed receiver.
+            r.broadcast_except(uuid, &remove_packet);
+            removed
+        })
+    }
 }
 
 impl Default for PlayerRegistryHandle {
@@ -283,5 +305,107 @@ mod tests {
         let reg2 = reg.clone();
         reg.admit(uuid(1), "alice".to_string(), 1);
         assert_eq!(reg2.online(), 1);
+    }
+
+    /// Helper: build an `EncodedPacket` stand-in so the broadcast path
+    /// can carry arbitrary payloads through `mpsc::Sender<EncodedPacket>`
+    /// in tests without pulling the full protocol encoder.
+    fn dummy_packet(tag: u8) -> EncodedPacket {
+        EncodedPacket::new(tag as i32, bytes::Bytes::from_static(&[]))
+    }
+
+    #[tokio::test]
+    async fn attach_and_snapshot_relays_joiner_broadcast() {
+        let reg = PlayerRegistryHandle::new();
+        // Alice admits first; her snapshot is empty (nobody else online).
+        reg.admit(uuid(1), "alice".to_string(), 1);
+        let joiner_pkt = dummy_packet(0x44);
+        let (mut alice_rx, others) = reg.attach_and_snapshot(uuid(1), joiner_pkt);
+        assert!(others.is_empty(), "no snapshot when alone");
+
+        // Bob admits next. His joiner broadcast goes OUT to Alice (the
+        // only other online peer), and his snapshot contains Alice.
+        reg.admit(uuid(2), "bob".to_string(), 2);
+        let bob_joiner_pkt = dummy_packet(0x44);
+        let (mut bob_rx, others) = reg.attach_and_snapshot(uuid(2), bob_joiner_pkt.clone());
+        assert_eq!(others.len(), 1);
+        assert_eq!(others[0].username, "alice");
+
+        // Both receivers should have the *opposite* player's joiner packet.
+        let received_by_alice = alice_rx.recv().await;
+        assert!(received_by_alice.is_some(), "alice got the broadcast");
+        assert_eq!(received_by_alice.unwrap().id, bob_joiner_pkt.id);
+        // Bob's own receiver must be empty — he never broadcast to himself.
+        let bob_drained = bob_rx.try_recv();
+        assert!(bob_drained.is_err(), "bob's own channel is empty");
+
+        // Charlie joins and should receive BOTH Alice and Bob as a snapshot.
+        reg.admit(uuid(3), "charlie".to_string(), 3);
+        let charlie_pkt = dummy_packet(0x44);
+        let (mut charlie_rx, others) = reg.attach_and_snapshot(uuid(3), charlie_pkt.clone());
+        assert_eq!(others.len(), 2);
+        assert!(others.iter().any(|r| r.username == "alice"));
+        assert!(others.iter().any(|r| r.username == "bob"));
+
+        // Alice and Bob each should have received Charlie's broadcast.
+        let received_by_alice_for_charlie = alice_rx.recv().await;
+        assert!(received_by_alice_for_charlie.is_some());
+        assert_eq!(received_by_alice_for_charlie.unwrap().id, charlie_pkt.id);
+        let received_by_bob_for_charlie = bob_rx.recv().await;
+        assert!(received_by_bob_for_charlie.is_some());
+        assert_eq!(received_by_bob_for_charlie.unwrap().id, charlie_pkt.id);
+        // Charlie's own channel must be empty.
+        assert!(
+            charlie_rx.try_recv().is_err(),
+            "charlie's own channel is empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn depart_and_broadcast_fans_out_remove() {
+        let reg = PlayerRegistryHandle::new();
+        // Three players attach their channels — keep their receivers.
+        reg.admit(uuid(1), "alice".to_string(), 1);
+        let (mut alice_rx, _) = reg.attach_and_snapshot(uuid(1), dummy_packet(0x44));
+        reg.admit(uuid(2), "bob".to_string(), 2);
+        let (mut bob_rx, _) = reg.attach_and_snapshot(uuid(2), dummy_packet(0x44));
+        reg.admit(uuid(3), "charlie".to_string(), 3);
+        let (mut charlie_rx, _) = reg.attach_and_snapshot(uuid(3), dummy_packet(0x44));
+
+        // Drain the per-joiner broadcasts so receivers are clean before
+        // the departure test; otherwise Bob's joiner packet (still
+        // queued for Alice) would shadow the remove broadcast below.
+        let _ = alice_rx.recv().await;
+        let _ = alice_rx.recv().await;
+        let _ = bob_rx.recv().await;
+
+        // Bob (uuid=2) departs — broadcast PlayerInfoRemove to Alice & Charlie.
+        let remove_pkt = dummy_packet(0x43);
+        let removed = reg.depart_and_broadcast(&uuid(2), remove_pkt);
+        assert!(removed.is_some());
+        assert_eq!(removed.unwrap().username, "bob");
+        assert_eq!(reg.online(), 2);
+
+        // Alice and Charlie should each have exactly one queued remove packet.
+        let received_by_alice = alice_rx.recv().await;
+        assert!(
+            received_by_alice.is_some(),
+            "alice got the remove broadcast"
+        );
+        assert_eq!(received_by_alice.unwrap().id, 0x43);
+        let received_by_charlie = charlie_rx.recv().await;
+        assert!(
+            received_by_charlie.is_some(),
+            "charlie got the remove broadcast"
+        );
+        assert_eq!(received_by_charlie.unwrap().id, 0x43);
+
+        // Depart when only one peer remains — broadcast is a no-op but
+        // removes cleanly.
+        let _ = reg.depart_and_broadcast(&uuid(1), dummy_packet(0x43));
+        assert_eq!(reg.online(), 1);
+        let r = reg.depart_and_broadcast(&uuid(3), dummy_packet(0x43));
+        assert!(r.is_some());
+        assert_eq!(reg.online(), 0);
     }
 }
